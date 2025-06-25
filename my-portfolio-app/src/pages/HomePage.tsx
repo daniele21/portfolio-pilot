@@ -490,35 +490,59 @@ const HomePage: React.FC = () => {
   }
   return (
     <>
-      {showTransactionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 p-8 rounded-xl shadow-2xl w-full max-w-lg">
-            <h2 className="text-2xl font-bold text-white mb-4">Add Transactions to Get Started</h2>
-            <p className="text-gray-300 mb-4">Paste your transactions in free text format below. This is required to initialize your portfolio.</p>
-            <textarea
-              className="w-full h-40 p-3 rounded-lg bg-gray-800 text-gray-100 border border-gray-700 focus:ring-2 focus:ring-indigo-500 mb-4"
-              value={transactionInput}
-              onChange={e => setTransactionInput(e.target.value)}
-              placeholder="e.g. Buy 10 AAPL at $150 on 2024-01-01\nSell 5 TSLA at $700 on 2024-02-15\n..."
-              disabled={transactionLoading}
-            />
-            {transactionError && <div className="text-red-400 mb-2">{transactionError}</div>}
-            <div className="flex justify-end gap-2">
-              <button
-                className="px-4 py-2 rounded bg-gray-700 text-gray-200 hover:bg-gray-600"
-                onClick={() => setShowTransactionModal(false)}
-                disabled={transactionLoading}
-              >Cancel</button>
-              <button
-                className="px-4 py-2 rounded bg-indigo-600 text-white font-semibold hover:bg-indigo-500 disabled:opacity-50"
-                onClick={handleTransactionSubmit}
-                disabled={transactionLoading || !transactionInput.trim()}
-              >{transactionLoading ? 'Processing...' : 'Submit Transactions'}</button>
-            </div>
+      {/* Portfolio Selector Dropdown */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
+        <div className="flex items-center gap-3">
+          <label className="text-gray-300 text-base font-semibold" htmlFor="portfolio-select">Portfolio:</label>
+          <div className="min-w-[220px]">
+            <Listbox
+              value={selectedPortfolio}
+              onChange={setSelectedPortfolio}
+              disabled={portfolioNamesLoading || !portfolioNames.length}
+            >
+              <div className="relative">
+                <Listbox.Button className={`relative w-full cursor-default rounded-lg bg-gray-700 py-2 pl-3 pr-10 text-left border border-gray-600 text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm min-h-[44px] ${portfolioNamesLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  id="portfolio-select"
+                >
+                  {selectedPortfolio || <span className="text-gray-400">Choose portfolio...</span>}
+                  <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
+                    <ChevronUpDownIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
+                  </span>
+                </Listbox.Button>
+                <Transition as={Fragment} leave="transition ease-in duration-100" leaveFrom="opacity-100" leaveTo="opacity-0">
+                  <Listbox.Options className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md bg-gray-800 py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm border border-gray-700">
+                    {portfolioNames.map((name) => (
+                      <Listbox.Option
+                        key={name}
+                        className={({ active }) =>
+                          `relative cursor-pointer select-none py-2 pl-10 pr-4 ${active ? 'bg-indigo-600 text-white' : 'text-gray-100'}`
+                        }
+                        value={name}
+                      >
+                        {({ selected }) => (
+                          <>
+                            <span className={`block truncate ${selected ? 'font-semibold' : 'font-normal'}`}>{name}</span>
+                            {selected ? (
+                              <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-indigo-300">
+                                <CheckIcon className="h-5 w-5" aria-hidden="true" />
+                              </span>
+                            ) : null}
+                          </>
+                        )}
+                      </Listbox.Option>
+                    ))}
+                  </Listbox.Options>
+                </Transition>
+              </div>
+            </Listbox>
           </div>
         </div>
-      )}
-      <div className="space-y-8">
+        {portfolioNamesLoading && (
+          <span className="text-gray-400 text-sm ml-2">Loading portfolios...</span>
+        )}
+      </div>
+      {/* Existing dashboard content */}
+      <div className="space-y-8 w-full">
         <CollapsibleSection key="kpi" title="Key Portfolio KPIs">
           <div className="flex flex-row flex-wrap gap-6 justify-center">
             {(() => { console.log('[DEBUG] Rendering KPI cards:', kpiCards); return null; })()}
@@ -894,12 +918,6 @@ const HomePage: React.FC = () => {
               />
               Performance
             </label>
-            {console.log('[DEBUG] tickerFiltered:', tickerFiltered, 'tickerValueType:', tickerValueType)}
-            <span className="ml-4 px-3 py-1 rounded-lg bg-indigo-700 text-white text-base font-bold shadow-md border border-indigo-400">
-              {tickerValueType === 'pct_from_first'
-                ? getFinalValue(tickerPctFromFirst, 'pct_from_first')
-                : getFinalValue(tickerFiltered, tickerValueType)}
-            </span>
           </div>
           <div className="flex flex-wrap items-center gap-4 mb-4">
             <button
