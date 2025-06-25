@@ -15,7 +15,8 @@ export default defineConfig(({ mode }) => {
       //    will pull in the browser shim rather than blow up at runtime.
       alias: {
         process: 'process/browser'
-      }
+      },
+      dedupe: ['react', 'react-dom']
     }
   };
 });

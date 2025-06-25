@@ -7,7 +7,7 @@ interface KpiCardProps {
   small?: boolean;
 }
 
-const KpiCard: React.FC<KpiCardProps> = ({ kpi, small }) => {
+const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small }) => {
   const bgColor = TRAFFIC_LIGHT_COLORS[kpi.status] || TRAFFIC_LIGHT_COLORS[TrafficLightStatus.NEUTRAL];
   const textColor = TRAFFIC_LIGHT_TEXT_COLORS[kpi.status] || TRAFFIC_LIGHT_TEXT_COLORS[TrafficLightStatus.NEUTRAL];
   
@@ -43,6 +43,6 @@ const KpiCard: React.FC<KpiCardProps> = ({ kpi, small }) => {
       {kpi.description && <p className={`text-xs mt-2 ${textColor} opacity-70`}>{kpi.description}</p>}
     </div>
   );
-};
+});
 
 export default KpiCard;

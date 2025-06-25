@@ -167,7 +167,7 @@ def lookup_ticker(query):
 def get_ticker(ticker_symbol):
     ticker_symbol = ticker_symbol.upper()
     update = request.args.get('update', 'true').lower() == 'true'
-    conn = sqlite3.connect(DATABASE_NAME)
+    conn = sqlite3.connect(DATABASE_NAME, timeout=15)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     # Check if info exists and is recent
@@ -462,7 +462,7 @@ def save_ticker(ticker_symbol):
     history = data.get('history')
     if not info or not history:
         return jsonify({'error': 'Both info and history fields are required.'}), 400
-    conn = sqlite3.connect(DATABASE_NAME)
+    conn = sqlite3.connect(DATABASE_NAME, timeout=15)
     cursor = conn.cursor()
     # Save info
     cursor.execute('''
@@ -815,7 +815,7 @@ def generate_ticker_report_api(portfolio_name, ticker):
     elif isinstance(data, dict) and 'force' in data:
         force = bool(data.get('force'))
     # Fetch ticker_info from DB
-    conn = sqlite3.connect(DATABASE_NAME)
+    conn = sqlite3.connect(DATABASE_NAME, timeout=15)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM ticker_info WHERE ticker = ?', (ticker.upper(),))

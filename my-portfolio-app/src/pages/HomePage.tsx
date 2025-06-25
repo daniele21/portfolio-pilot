@@ -1,8 +1,8 @@
-import React, { useEffect, useState, Fragment } from 'react';
+import React, { Fragment, useState } from 'react';
 import KpiCard from '../components/KpiCard';
 import PerformanceChart from '../components/PerformanceChart';
 import SunburstChart from '../components/SunburstChart';
-import { Kpi, HistoricalDataPoint, Asset, TrafficLightStatus } from '../types';
+import { Kpi, HistoricalDataPoint, TrafficLightStatus } from '../types';
 import { getAssets, processAndApplyMovements, fetchAllPortfolioNames, fetchPortfolioPerformance, fetchTickerPerformance, fetchPortfolioKpis, fetchPortfolioAllocation, fetchPortfolioReturnsKpis } from '../services/portfolioService';
 import { PresentationChartLineIcon } from '@heroicons/react/24/outline';
 import { useAuth } from '../AuthContext';
@@ -11,15 +11,13 @@ import dayjs from 'dayjs';
 import { Listbox, Transition } from '@headlessui/react';
 import { CheckIcon, ChevronUpDownIcon, XMarkIcon } from '@heroicons/react/20/solid';
 import { fetchBenchmarkPerformance } from '../services/marketDataService';
+import { useQuery } from '@tanstack/react-query';
 
-
-// --- KPI API response type ---
-type PortfolioKpisApiResponse = {
-  best_ticker: { pct: number, symbol: string },
-  highest_value_ticker: { abs_value: number, symbol: string },
-  net_performance: number,
-  portfolio_value: { abs_value: number, net_value: number },
-  worst_ticker: { pct: number, symbol: string }
+// Helper to get min/max dates from data
+const getMinMaxDates = (data: HistoricalDataPoint[]) => {
+  if (!data || data.length === 0) return {min: '', max: ''};
+  const dates = data.map(d => d.date).sort();
+  return {min: dates[0], max: dates[dates.length-1]};
 };
 
 const CollapsibleSection: React.FC<{ title: string; children: React.ReactNode; defaultOpen?: boolean }> = ({ title, children, defaultOpen = true }) => {
@@ -45,34 +43,147 @@ const CollapsibleSection: React.FC<{ title: string; children: React.ReactNode; d
 };
 
 const HomePage: React.FC = () => {
-  const [kpis, setKpis] = useState<PortfolioKpisApiResponse | null>(null);
-  const [assetsForSelector, setAssetsForSelector] = useState<Asset[]>([]); // Assets from portfolio status for dropdown
-  const [loading, setLoading] = useState<boolean>(true);
-  const [tickerLoading, setTickerLoading] = useState<boolean>(false);
-  const [benchmarkLoading, setBenchmarkLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const { isLoggedIn, idToken } = useAuth();
+  const [selectedPortfolio, setSelectedPortfolio] = useState<string | null>(null);
+  const [portfolioValueType, setPortfolioValueType] = useState<'value' | 'abs_value' | 'pct' | 'pct_from_first'>('value');
+  const [tickerValueType, setTickerValueType] = useState<'value' | 'abs_value' | 'pct' | 'pct_from_first'>('value');
+  const [portfolioDateRange, setPortfolioDateRange] = useState<{ start: string; end: string } | null>(null);
+  const [tickerDateRange, setTickerDateRange] = useState<{ start: string; end: string } | null>(null);
+  const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
+  const [benchmarkPerformance, setBenchmarkPerformance] = useState<Record<string, HistoricalDataPoint[]>>({});
+  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
   const [showTransactionModal, setShowTransactionModal] = useState(false);
   const [transactionInput, setTransactionInput] = useState('');
   const [transactionError, setTransactionError] = useState<string | null>(null);
   const [transactionLoading, setTransactionLoading] = useState(false);
-  const { isLoggedIn, idToken } = useAuth();
-  const [selectedPortfolio, setSelectedPortfolio] = useState<string | null>(null);
-  const [portfolioNames, setPortfolioNames] = useState<string[]>([]);
-  const [portfolioPerformance, setPortfolioPerformance] = useState<HistoricalDataPoint[]>([]);
-  const [returnsKpis, setReturnsKpis] = useState<any | null>(null);
+  const [tickerLoading, setTickerLoading] = useState(false);
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false);
 
-  // --- Portfolio Performance Date Range State ---
-  const [portfolioDateRange, setPortfolioDateRange] = useState<{start: string, end: string} | null>(null);
-  // --- Value Type State ---
-  const [portfolioValueType, setPortfolioValueType] = useState<'value' | 'abs_value' | 'pct' | 'pct_from_first'>('value');
+  // Fetch all portfolio names
+  const {
+    data: portfolioNames = [],
+    isLoading: portfolioNamesLoading,
+    error: portfolioNamesError
+  } = useQuery({
+    queryKey: ['portfolioNames', isLoggedIn, idToken],
+    queryFn: fetchAllPortfolioNames,
+    enabled: !!isLoggedIn && !!idToken
+  });
 
-  // --- Ticker Performance Date Range State ---
-  const [tickerDateRange, setTickerDateRange] = useState<{start: string, end: string} | null>(null);
-  // --- Ticker Value Type State ---
-  const [tickerValueType, setTickerValueType] = useState<'value' | 'abs_value' | 'pct' | 'pct_from_first'>('value');
-  // --- Multi-ticker selection state ---
-  const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
-  const [multiTickerPerformance, setMultiTickerPerformance] = useState<Record<string, HistoricalDataPoint[]>>({});
+  // Set selectedPortfolio to first available if not set and portfolios are available
+  React.useEffect(() => {
+    if (portfolioNames.length > 0 && !selectedPortfolio) {
+      setSelectedPortfolio(portfolioNames[0]);
+    }
+  }, [portfolioNames, selectedPortfolio]);
+
+  // Fetch KPIs for selected portfolio
+  const {
+    data: kpis,
+    isLoading: kpisLoading,
+    error: kpisError
+  } = useQuery({
+    queryKey: ['portfolioKpis', selectedPortfolio, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioKpis(selectedPortfolio) : null,
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
+  });
+
+  // --- Portfolio Performance: Use React Query, memoize filtered and derived data ---
+  const {
+    data: portfolioPerformance = [],
+    isLoading: perfLoading,
+    error: perfError
+  } = useQuery({
+    queryKey: ['portfolioPerformance', selectedPortfolio, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioPerformance(selectedPortfolio) : [],
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
+  });
+  const portfolioMinMax = React.useMemo(() => getMinMaxDates(portfolioPerformance), [portfolioPerformance]);
+  const portfolioFiltered = React.useMemo(() => {
+    if (!portfolioDateRange) return portfolioPerformance;
+    return portfolioPerformance.filter(d => d.date >= portfolioDateRange.start && d.date <= portfolioDateRange.end);
+  }, [portfolioPerformance, portfolioDateRange]);
+  const portfolioPctFromFirst = React.useMemo(() => {
+    return portfolioFiltered.map(d => ({
+      date: d.date,
+      pct_from_first: d.pct_from_first !== undefined ? d.pct_from_first : (
+        portfolioFiltered.length > 0 && portfolioFiltered[0].abs_value !== undefined && d.abs_value !== undefined
+          ? (((d.abs_value ?? 0) - (portfolioFiltered[0].abs_value ?? 0)) / (portfolioFiltered[0].abs_value ?? 1) * 100)
+          : 0
+      )
+    }));
+  }, [portfolioFiltered]);
+
+  // --- Returns KPIs: Use React Query, memoize mapping ---
+  const {
+    data: returnsKpis,
+    isLoading: returnsKpisLoading,
+    error: returnsKpisError
+  } = useQuery({
+    queryKey: ['returnsKpis', selectedPortfolio, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioReturnsKpis(selectedPortfolio) : null,
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
+  });
+  const returnsKpiCards = React.useMemo(() => {
+    if (!returnsKpis) return [];
+    const cards: Kpi[] = [];
+    if (typeof returnsKpis.yesterday_return === 'number') {
+      cards.push({
+        id: 'yesterday_return',
+        name: 'Return (Yesterday)',
+        value: returnsKpis.yesterday_return.toFixed(2) + '%',
+        unit: '',
+        status: returnsKpis.yesterday_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.yesterday_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
+        description: 'Portfolio return for the previous trading day',
+        icon: PresentationChartLineIcon
+      });
+    }
+    if (typeof returnsKpis.weekly_return === 'number') {
+      cards.push({
+        id: 'weekly_return',
+        name: 'Return (1 Week)',
+        value: returnsKpis.weekly_return.toFixed(2) + '%',
+        unit: '',
+        status: returnsKpis.weekly_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.weekly_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
+        description: 'Portfolio return over the last 7 days',
+        icon: PresentationChartLineIcon
+      });
+    }
+    if (typeof returnsKpis.monthly_return === 'number') {
+      cards.push({
+        id: 'monthly_return',
+        name: 'Return (1 Month)',
+        value: returnsKpis.monthly_return.toFixed(2) + '%',
+        unit: '',
+        status: returnsKpis.monthly_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.monthly_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
+        description: 'Portfolio return over the last 30 days',
+        icon: PresentationChartLineIcon
+      });
+    }
+    if (typeof returnsKpis.three_month_return === 'number') {
+      cards.push({
+        id: 'three_month_return',
+        name: 'Return (3 Months)',
+        value: returnsKpis.three_month_return.toFixed(2) + '%',
+        unit: '',
+        status: returnsKpis.three_month_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.three_month_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
+        description: 'Portfolio return over the last 3 months',
+        icon: PresentationChartLineIcon
+      });
+    }
+    if (typeof returnsKpis.ytd_return === 'number') {
+      cards.push({
+        id: 'ytd_return',
+        name: 'Return (YTD)',
+        value: returnsKpis.ytd_return.toFixed(2) + '%',
+        unit: '',
+        status: returnsKpis.ytd_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.ytd_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
+        description: 'Portfolio return year-to-date',
+        icon: PresentationChartLineIcon
+      });
+    }
+    return cards;
+  }, [returnsKpis]);
 
   // --- Benchmark tickers ---
   const BENCHMARK_TICKERS = [
@@ -84,71 +195,32 @@ const HomePage: React.FC = () => {
     { symbol: 'IMEU.L', name: 'iShares MSCI Europe' },
     { symbol: 'FTSEMIB.MI', name: 'FTSE MIB' }
   ];
-  const [benchmarkPerformance, setBenchmarkPerformance] = useState<Record<string, HistoricalDataPoint[]>>({});
-  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
-  const [benchmarkNames, setBenchmarkNames] = useState<Record<string, string>>({});
-
-  // Set selectedPortfolio to first available if not set and portfolios are available
-  useEffect(() => {
-    if (portfolioNames.length > 0 && !selectedPortfolio) {
-      setSelectedPortfolio(portfolioNames[0]);
-    }
-  }, [portfolioNames]);
-
-  useEffect(() => {
-    const fetchData = async () => {
-      if (!isLoggedIn || !idToken) {
-        setLoading(false);
-        setError("Please sign in to view portfolio data.");
-        setKpis(null); setAssetsForSelector([]);
-        setPortfolioNames([]);
-        setPortfolioPerformance([]);
-        setReturnsKpis(null);
-        return;
-      }
-      try {
-        setLoading(true);
-        // Fetch all portfolio names from backend
-        const uniquePortfolioNames = await fetchAllPortfolioNames();
-        setPortfolioNames(uniquePortfolioNames);
-        // If no portfolios, show transaction modal
-        if (uniquePortfolioNames.length === 0) {
-          setShowTransactionModal(true);
-          setKpis(null); setAssetsForSelector([]);
-          setSelectedPortfolio(null);
-          setPortfolioPerformance([]);
-          setReturnsKpis(null);
-          setLoading(false);
-          return;
+  const {
+    data: benchmarkNames = {} as Record<string, string>,
+  } = useQuery<Record<string, string>>({
+    queryKey: ['benchmarkNames'],
+    queryFn: async () => {
+      const names: Record<string, string> = {};
+      await Promise.all(BENCHMARK_TICKERS.map(async (b) => {
+        try {
+          const res = await fetch(`/api/ticker/${b.symbol}`);
+          if (res.ok) {
+            const data = await res.json();
+            names[b.symbol] = data?.info?.shortName || b.name || b.symbol;
+          } else {
+            names[b.symbol] = b.name || b.symbol;
+          }
+        } catch {
+          names[b.symbol] = b.name || b.symbol;
         }
-        setShowTransactionModal(false);
-        // Only fetch data if selectedPortfolio is set and valid
-        if (selectedPortfolio && uniquePortfolioNames.includes(selectedPortfolio)) {
-          const [kpiData, assetData, perfData, returnsKpiData] = await Promise.all([
-            fetchPortfolioKpis(selectedPortfolio),
-            getAssets(selectedPortfolio),
-            fetchPortfolioPerformance(selectedPortfolio),
-            fetchPortfolioReturnsKpis(selectedPortfolio)
-          ]);
-          setKpis(kpiData);
-          setPortfolioPerformance(perfData);
-          setReturnsKpis(returnsKpiData);
-          const eligibleAssets = Array.isArray(assetData) ? assetData.filter((a: any) => a.category !== 'Cash' && a.symbol) : [];
-          setAssetsForSelector(eligibleAssets);
-        }
-        setError(null);
-      } catch (err) {
-        setError("Failed to load dashboard data. The backend might be unavailable or portfolio is not initialized.");
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
-  }, [isLoggedIn, idToken, selectedPortfolio]); // Reload main data if auth state changes
+      }));
+      return names;
+    },
+    staleTime: 1000 * 60 * 60, // 1 hour
+  });
 
   // Fetch performance for all selected tickers
-  useEffect(() => {
+  React.useEffect(() => {
     const fetchAll = async () => {
       if (selectedPortfolio && selectedTickers.length > 0) {
         setTickerLoading(true);
@@ -157,10 +229,10 @@ const HomePage: React.FC = () => {
           const perf = await fetchTickerPerformance(selectedPortfolio, ticker);
           results[ticker] = perf;
         }));
-        setMultiTickerPerformance(results);
+        setMultiTickerPerformance(results); // <-- FIX: update state with fetched data
         setTickerLoading(false);
       } else {
-        setMultiTickerPerformance({});
+        setMultiTickerPerformance({}); // <-- Clear when no tickers
         setTickerLoading(false);
       }
     };
@@ -168,10 +240,9 @@ const HomePage: React.FC = () => {
   }, [selectedPortfolio, selectedTickers]);
 
   // Fetch performance for selected benchmarks only
-  useEffect(() => {
+  React.useEffect(() => {
     const fetchSelectedBenchmarks = async () => {
       if (selectedBenchmarks.length === 0) {
-        setBenchmarkPerformance({});
         setBenchmarkLoading(false);
         return;
       }
@@ -187,29 +258,6 @@ const HomePage: React.FC = () => {
     fetchSelectedBenchmarks();
   }, [selectedBenchmarks]);
 
-  // Fetch benchmark info at mount
-  useEffect(() => {
-    const fetchBenchmarkNames = async () => {
-      const names: Record<string, string> = {};
-      await Promise.all(BENCHMARK_TICKERS.map(async (b) => {
-        try {
-          // Call get_ticker API (fetchTickerPerformance returns perf, not info)
-          const res = await fetch(`/api/ticker/${b.symbol}`);
-          if (res.ok) {
-            const data = await res.json();
-            names[b.symbol] = data?.info?.shortName || b.name || b.symbol;
-          } else {
-            names[b.symbol] = b.name || b.symbol;
-          }
-        } catch {
-          names[b.symbol] = b.name || b.symbol;
-        }
-      }));
-      setBenchmarkNames(names);
-    };
-    fetchBenchmarkNames();
-  }, []);
-
   const handleTransactionSubmit = async () => {
     setTransactionLoading(true);
     setTransactionError(null);
@@ -222,13 +270,8 @@ const HomePage: React.FC = () => {
         setTransactionInput('');
         // Refresh dashboard data
         if (selectedPortfolio) {
-          const [kpiData, assetData] = await Promise.all([
-            fetchPortfolioKpis(selectedPortfolio),
-            getAssets(selectedPortfolio)
-          ]);
-          setKpis(kpiData);
+          const assetData = await getAssets(selectedPortfolio);
           const eligibleAssets = (assetData as any[]).filter((a: any) => a.category !== 'Cash' && a.symbol);
-          setAssetsForSelector(eligibleAssets);
         }
       }
     } catch (err) {
@@ -236,72 +279,6 @@ const HomePage: React.FC = () => {
     } finally {
       setTransactionLoading(false);
     }
-  };
-
-  // Helper to get min/max dates from data
-  const getMinMaxDates = (data: HistoricalDataPoint[]) => {
-    if (!data || data.length === 0) return {min: '', max: ''};
-    const dates = data.map(d => d.date).sort();
-    return {min: dates[0], max: dates[dates.length-1]};
-  };
-
-  // --- Portfolio Performance: Filtered Data ---
-  const portfolioMinMax = getMinMaxDates(portfolioPerformance);
-  const portfolioFiltered = React.useMemo(() => {
-    if (!portfolioDateRange) return portfolioPerformance;
-    return portfolioPerformance.filter(d => d.date >= portfolioDateRange.start && d.date <= portfolioDateRange.end);
-  }, [portfolioPerformance, portfolioDateRange]);
-
-  // --- Portfolio % from first value (for charting like benchmarks) ---
-  const portfolioPctFromFirst = React.useMemo(() => {
-    return portfolioFiltered.map(d => ({
-      date: d.date,
-      pct_from_first: d.pct_from_first !== undefined ? d.pct_from_first : (
-        portfolioFiltered.length > 0 && portfolioFiltered[0].abs_value !== undefined && d.abs_value !== undefined
-          ? (((d.abs_value ?? 0) - (portfolioFiltered[0].abs_value ?? 0)) / (portfolioFiltered[0].abs_value ?? 1) * 100)
-          : 0
-      )
-    }));
-  }, [portfolioFiltered]);
-
-  // --- Ticker Performance: Filtered Data ---
-  const tickerMinMax = React.useMemo(() => {
-    // Compute min/max from all selected tickers' data
-    const all = selectedTickers.flatMap(t => multiTickerPerformance[t] || []);
-    if (!all.length) return {min: '', max: ''};
-    const dates = all.map(d => d.date).sort();
-    return {min: dates[0], max: dates[dates.length-1]};
-  }, [selectedTickers, multiTickerPerformance]);
-  const tickerFiltered = React.useMemo(() => {
-    // Filter all selected tickers' data by date range
-    return selectedTickers.flatMap(t => (multiTickerPerformance[t] || []).filter((d: HistoricalDataPoint) => {
-      if (!tickerDateRange) return true;
-      return d.date >= tickerDateRange.start && d.date <= tickerDateRange.end;
-    }));
-  }, [selectedTickers, multiTickerPerformance, tickerDateRange]);
-
-  // --- Benchmark Performance: Filtered Data ---
-  const benchmarkFiltered = React.useMemo(() => {
-    if (!portfolioDateRange) return benchmarkPerformance;
-    const filtered: Record<string, HistoricalDataPoint[]> = {};
-    for (const symbol of selectedBenchmarks) {
-      filtered[symbol] = (benchmarkPerformance[symbol] || []).filter((d: HistoricalDataPoint) => d.date >= portfolioDateRange.start && d.date <= portfolioDateRange.end);
-    }
-    return filtered;
-  }, [benchmarkPerformance, selectedBenchmarks, portfolioDateRange]);
-
-  // --- Compute final value for portfolio trend ---
-  const getFinalValue = (data: HistoricalDataPoint[], valueType: 'value' | 'abs_value' | 'pct' | 'pct_from_first') => {
-    if (!data || data.length === 0) return null;
-    const last = data[data.length - 1];
-    if (valueType === 'pct') return last.pct?.toFixed(2) + '%';
-    if (valueType === 'abs_value') return (last.abs_value ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    if (valueType === 'pct_from_first') {
-      if (last.pct_from_first !== undefined) return last.pct_from_first.toFixed(2) + '%';
-      if (data[0]?.abs_value !== undefined && last.abs_value !== undefined) return (((last.abs_value ?? 0) - (data[0].abs_value ?? 0)) / (data[0].abs_value ?? 1) * 100).toFixed(2) + '%';
-      return '0%';
-    }
-    return last.value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
   };
 
   // --- YTD Button Handlers ---
@@ -386,80 +363,20 @@ const HomePage: React.FC = () => {
     return [];
   }, [kpis]);
 
-  // --- Returns KPI Card Data ---
-  const returnsKpiCards = React.useMemo(() => {
-    if (!returnsKpis) return [];
-    // returnsKpis: { yesterday_return, weekly_return, monthly_return, three_month_return, ytd_return, ... }
-    const cards: Kpi[] = [];
-    if (typeof returnsKpis.yesterday_return === 'number') {
-      cards.push({
-        id: 'yesterday_return',
-        name: 'Return (Yesterday)',
-        value: returnsKpis.yesterday_return.toFixed(2) + '%',
-        unit: '',
-        status: returnsKpis.yesterday_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.yesterday_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
-        description: 'Portfolio return for the previous trading day',
-        icon: PresentationChartLineIcon
-      });
-    }
-    if (typeof returnsKpis.weekly_return === 'number') {
-      cards.push({
-        id: 'weekly_return',
-        name: 'Return (1 Week)',
-        value: returnsKpis.weekly_return.toFixed(2) + '%',
-        unit: '',
-        status: returnsKpis.weekly_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.weekly_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
-        description: 'Portfolio return over the last 7 days',
-        icon: PresentationChartLineIcon
-      });
-    }
-    if (typeof returnsKpis.monthly_return === 'number') {
-      cards.push({
-        id: 'monthly_return',
-        name: 'Return (1 Month)',
-        value: returnsKpis.monthly_return.toFixed(2) + '%',
-        unit: '',
-        status: returnsKpis.monthly_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.monthly_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
-        description: 'Portfolio return over the last 30 days',
-        icon: PresentationChartLineIcon
-      });
-    }
-    if (typeof returnsKpis.three_month_return === 'number') {
-      cards.push({
-        id: 'three_month_return',
-        name: 'Return (3 Months)',
-        value: returnsKpis.three_month_return.toFixed(2) + '%',
-        unit: '',
-        status: returnsKpis.three_month_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.three_month_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
-        description: 'Portfolio return over the last 3 months',
-        icon: PresentationChartLineIcon
-      });
-    }
-    if (typeof returnsKpis.ytd_return === 'number') {
-      cards.push({
-        id: 'ytd_return',
-        name: 'Return (YTD)',
-        value: returnsKpis.ytd_return.toFixed(2) + '%',
-        unit: '',
-        status: returnsKpis.ytd_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.ytd_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
-        description: 'Portfolio return year-to-date',
-        icon: PresentationChartLineIcon
-      });
-    }
-    return cards;
-  }, [returnsKpis]);
-
   // Allocation view state: 'overall' or 'quoteType'
   const [allocationView, setAllocationView] = useState<'overall' | 'quoteType'>('overall');
-  const [allocationData, setAllocationData] = useState<any>(null);
 
   // Fetch allocation data from backend API when allocationView or selectedPortfolio changes
-  useEffect(() => {
+  React.useEffect(() => {
     if (!selectedPortfolio) return;
     fetchPortfolioAllocation(selectedPortfolio, allocationView).then(res => {
       setAllocationData(res?.allocation || null);
     });
   }, [selectedPortfolio, allocationView]);
+
+  // --- Add missing state and memoized values for ticker and allocation data ---
+  const [multiTickerPerformance, setMultiTickerPerformance] = useState<Record<string, HistoricalDataPoint[]>>({});
+  const [allocationData, setAllocationData] = useState<any>(null);
 
   // For SunburstChart, convert allocationData to assets-like array for compatibility
   const allocationAssets = React.useMemo(() => {
@@ -473,7 +390,7 @@ const HomePage: React.FC = () => {
         value: item.value,
         quantity: item.quantity,
         allocation_pct: item.allocation_pct,
-        category: item.category || 'Unknown', // Ensure Asset type compatibility
+        category: item.category || 'Unknown',
         region: item.region || 'Unknown',
       }));
     } else {
@@ -491,6 +408,70 @@ const HomePage: React.FC = () => {
     }
   }, [allocationData, allocationView]);
 
+  // Memoized ticker min/max and filtered data
+  const tickerMinMax = React.useMemo(() => {
+    // Flatten all selected tickers' data
+    const all = Object.values(multiTickerPerformance).flat();
+    return getMinMaxDates(all);
+  }, [multiTickerPerformance]);
+  const tickerFiltered = React.useMemo(() => {
+    if (!tickerDateRange) return Object.values(multiTickerPerformance).flat();
+    return Object.values(multiTickerPerformance).flat().filter(d => d.date >= tickerDateRange.start && d.date <= tickerDateRange.end);
+  }, [multiTickerPerformance, tickerDateRange]);
+  // Add tickerPctFromFirst calculation
+  const tickerPctFromFirst = React.useMemo(() => {
+    if (!tickerFiltered.length) return [];
+    const first = tickerFiltered[0].abs_value ?? 1;
+    return tickerFiltered.map(d => ({
+      ...d,
+      pct_from_first: d.abs_value !== undefined ? ((d.abs_value - first) / first) * 100 : undefined,
+    }));
+  }, [tickerFiltered]);
+
+  // Memoized benchmarkFiltered for chart
+  const benchmarkFiltered = React.useMemo(() => {
+    const filtered: Record<string, HistoricalDataPoint[]> = {};
+    for (const symbol of selectedBenchmarks) {
+      const data = (benchmarkPerformance[symbol] || []) as HistoricalDataPoint[];
+      if (!portfolioDateRange) {
+        filtered[symbol] = data;
+      } else {
+        filtered[symbol] = data.filter(d => d.date >= portfolioDateRange.start && d.date <= portfolioDateRange.end);
+      }
+    }
+    return filtered;
+  }, [benchmarkPerformance, selectedBenchmarks, portfolioDateRange]);
+
+  // Helper to get final value for display
+  const getFinalValue = (data: any[], valueType: string) => {
+    if (!data || data.length === 0) return '-';
+    const last = data[data.length - 1];
+    if (!last) return '-';
+    if (valueType === 'value' && last.value !== undefined) return last.value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    if (valueType === 'abs_value' && last.abs_value !== undefined) return last.abs_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    if (valueType === 'pct' && last.pct !== undefined) return last.pct.toFixed(2) + '%';
+    if (valueType === 'pct_from_first' && last.pct_from_first !== undefined) return last.pct_from_first.toFixed(2) + '%';
+    return '-';
+  };
+
+  // --- Assets for Selector: Use React Query for backend fetch, memoize filtered list ---
+  const {
+    data: allAssets = [],
+  } = useQuery({
+    queryKey: ['assets', selectedPortfolio, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? getAssets(selectedPortfolio) : [],
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
+  });
+  const assetsForSelector = React.useMemo(
+    () => (allAssets as any[]).filter((a: any) => a.category !== 'Cash' && a.symbol),
+    [allAssets]
+  );
+
+  // --- Loading and Error State ---
+  // Use a single loading variable for main dashboard loading
+  const loading = portfolioNamesLoading || kpisLoading;
+  const error = portfolioNamesError || kpisError;
+
   if (loading && !kpis) { // Show main loader only if initial data isn't there yet
     return (
       <div className="flex justify-center items-center h-full">
@@ -501,11 +482,11 @@ const HomePage: React.FC = () => {
   }
 
   if (error && !kpis) { // Show main error only if critical data failed
-    return <div className="text-center text-red-400 text-xl p-8">{error}</div>;
+    return <div className="text-center text-red-400 text-xl p-8">{String(error)}</div>;
   }
-  
+
   if (!isLoggedIn && !loading) {
-     return <div className="text-center text-yellow-400 text-xl p-8">Please sign in to access the dashboard.</div>;
+    return <div className="text-center text-yellow-400 text-xl p-8">Please sign in to access the dashboard.</div>;
   }
   return (
     <>
@@ -819,16 +800,23 @@ const HomePage: React.FC = () => {
                             return (
                               <span key={symbol} className="flex items-center bg-indigo-700 text-white rounded px-2 py-0.5 text-xs font-semibold mr-1 mb-1">
                                 {asset ? `${asset.name} (${asset.symbol})` : symbol}
-                                <button
-                                  type="button"
-                                  className="ml-1 text-indigo-200 hover:text-white focus:outline-none"
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  className="ml-1 text-indigo-200 hover:text-white focus:outline-none cursor-pointer"
                                   onClick={e => {
                                     e.stopPropagation();
                                     setSelectedTickers(selectedTickers.filter(t => t !== symbol));
                                   }}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      setSelectedTickers(selectedTickers.filter(t => t !== symbol));
+                                    }
+                                  }}
+                                  aria-label={`Remove ${asset ? `${asset.name} (${asset.symbol})` : symbol}`}
                                 >
                                   <XMarkIcon className="h-3 w-3" />
-                                </button>
+                                </span>
                               </span>
                             );
                           })}
@@ -848,12 +836,12 @@ const HomePage: React.FC = () => {
                             }
                             value={asset.symbol}
                           >
-                            {({ selected }) => (
+                            {(optionProps: { selected: boolean }) => (
                               <>
-                                <span className={`block truncate ${selected ? 'font-semibold' : 'font-normal'}`}>
+                                <span className={`block truncate ${optionProps.selected ? 'font-semibold' : 'font-normal'}`}>
                                   {asset.name} ({asset.symbol})
                                 </span>
-                                {selected ? (
+                                {optionProps.selected ? (
                                   <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-indigo-300">
                                     <CheckIcon className="h-5 w-5" aria-hidden="true" />
                                   </span>
@@ -906,8 +894,11 @@ const HomePage: React.FC = () => {
               />
               Performance
             </label>
+            {console.log('[DEBUG] tickerFiltered:', tickerFiltered, 'tickerValueType:', tickerValueType)}
             <span className="ml-4 px-3 py-1 rounded-lg bg-indigo-700 text-white text-base font-bold shadow-md border border-indigo-400">
-              {getFinalValue(tickerFiltered, tickerValueType)}
+              {tickerValueType === 'pct_from_first'
+                ? getFinalValue(tickerPctFromFirst, 'pct_from_first')
+                : getFinalValue(tickerFiltered, tickerValueType)}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-4 mb-4">
