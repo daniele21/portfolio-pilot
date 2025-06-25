@@ -1,18 +1,25 @@
 from collections import defaultdict
 from datetime import datetime
 import pandas as pd
-import database
-import data_fetcher
+import sqlite3
+from db.database import (
+    get_transactions,
+    aggregate_positions,
+    get_ticker_history,
+    save_ticker_data,
+    DATABASE_NAME
+)
+from services import data_fetcher
 
 
 def get_portfolio_status(portfolio_name):
     """Return current holdings with latest prices using the new normalized ticker tables."""
-    txs = database.get_transactions(portfolio_name)
-    positions = database.aggregate_positions(txs)
+    txs = get_transactions(portfolio_name)
+    positions = aggregate_positions(txs)
     holdings = []
     total_value = 0.0
-    conn = database.sqlite3.connect(database.DATABASE_NAME)
-    conn.row_factory = database.sqlite3.Row
+    conn = sqlite3.connect(DATABASE_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     for ticker, qty in positions.items():
         if qty == 0:
@@ -37,11 +44,11 @@ def get_portfolio_status(portfolio_name):
 
 def get_performance(portfolio_name):
     """Compute simple performance trend using daily closes."""
-    txs = database.get_transactions(portfolio_name)
+    txs = get_transactions(portfolio_name)
     if not txs:
         return []
     first_date = min(t["date"] for t in txs)
-    positions = database.aggregate_positions(txs)
+    positions = aggregate_positions(txs)
     history_dict = {}
     for ticker, qty in positions.items():
         if qty == 0:
@@ -79,7 +86,7 @@ def compute_portfolio_performance(portfolio_name):
     'value' is the absolute value, 'pct' is the performance % relative to the cost basis (total invested up to that date).
     'pct_from_first' is the % change from the first abs_value (start of series).
     """
-    txs = database.get_transactions(portfolio_name)
+    txs = get_transactions(portfolio_name)
     if not txs:
         return []
     df_txs = pd.DataFrame(txs)
@@ -90,13 +97,13 @@ def compute_portfolio_performance(portfolio_name):
     all_dates = set()
     ticker_histories = {}
     for ticker in tickers:
-        hist = database.get_ticker_history(ticker)
+        hist = get_ticker_history(ticker)
         if not hist:
             data, _ = data_fetcher.fetch_with_cache(ticker)
             history = (data or {}).get('history', [])
             if history:
-                database.save_ticker_data(ticker, data)
-                hist = database.get_ticker_history(ticker)
+                save_ticker_data(ticker, data)
+                hist = get_ticker_history(ticker)
         if not hist:
             continue
         df_hist = pd.DataFrame(hist)
@@ -143,20 +150,20 @@ def compute_ticker_performance(portfolio_name, ticker):
     Returns a list of dicts: [{date: ..., value: ..., pct: ...}, ...]
     'value' is the net value (market value minus cost spent), 'pct' is the performance % relative to the cost spent for that ticker up to that date.
     """
-    txs = [t for t in database.get_transactions(portfolio_name) if t.get('ticker') == ticker]
+    txs = [t for t in get_transactions(portfolio_name) if t.get('ticker') == ticker]
     if not txs:
         return []
     df_txs = pd.DataFrame(txs)
     if df_txs.empty or 'date' not in df_txs.columns or 'quantity' not in df_txs.columns or 'price' not in df_txs.columns:
         return []
     df_txs['date'] = pd.to_datetime(df_txs['date'])
-    hist = database.get_ticker_history(ticker)
+    hist = get_ticker_history(ticker)
     if not hist:
         data, _ = data_fetcher.fetch_with_cache(ticker)
         history = (data or {}).get('history', [])
         if history:
-            database.save_ticker_data(ticker, data)
-            hist = database.get_ticker_history(ticker)
+            save_ticker_data(ticker, data)
+            hist = get_ticker_history(ticker)
     if not hist:
         return []
     df_hist = pd.DataFrame(hist)
@@ -187,13 +194,13 @@ def compute_benchmark_performance(ticker):
     Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_first: ...}, ...]
     'value' and 'abs_value' are the same (no cost basis), 'pct' is percent change from the first value, 'pct_from_first' is also percent change from the first value (for frontend consistency).
     """
-    hist = database.get_ticker_history(ticker)
+    hist = get_ticker_history(ticker)
     if not hist:
         data, _ = data_fetcher.fetch_with_cache(ticker)
         history = (data or {}).get('history', [])
         if history:
-            database.save_ticker_data(ticker, data)
-            hist = database.get_ticker_history(ticker)
+            save_ticker_data(ticker, data)
+            hist = get_ticker_history(ticker)
     if not hist:
         return []
     df_hist = pd.DataFrame(hist)
@@ -221,11 +228,11 @@ def get_overall_asset_allocation(portfolio_name):
     """
     Returns a list of dicts: [{ticker, value, quantity, name, allocation_pct} ...] for all tickers in the portfolio, with their current value, quantity, and allocation as a percentage of total portfolio value.
     """
-    txs = database.get_transactions(portfolio_name)
-    positions = database.aggregate_positions(txs)
+    txs = get_transactions(portfolio_name)
+    positions = aggregate_positions(txs)
     allocation = []
-    conn = database.sqlite3.connect(database.DATABASE_NAME)
-    conn.row_factory = database.sqlite3.Row
+    conn = sqlite3.connect(DATABASE_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     total_value = 0.0
     temp_alloc = []
@@ -258,11 +265,11 @@ def get_asset_allocation_by_quote_type(portfolio_name):
     Returns a dict: {quoteType: allocation_percentage, ...} for all tickers in the portfolio, using quoteType from ticker_info.
     The allocation is the percentage of each quoteType's value over the total portfolio value.
     """
-    txs = database.get_transactions(portfolio_name)
-    positions = database.aggregate_positions(txs)
+    txs = get_transactions(portfolio_name)
+    positions = aggregate_positions(txs)
     allocation = {}
-    conn = database.sqlite3.connect(database.DATABASE_NAME)
-    conn.row_factory = database.sqlite3.Row
+    conn = sqlite3.connect(DATABASE_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     total_value = 0.0
     temp = {}
@@ -295,7 +302,7 @@ def compute_returns_since(portfolio_name, start_date):
     }
     """
     import pandas as pd
-    txs = database.get_transactions(portfolio_name)
+    txs = get_transactions(portfolio_name)
     if not txs:
         return {'portfolio': None, 'tickers': {}}
     df_txs = pd.DataFrame(txs)
@@ -305,13 +312,13 @@ def compute_returns_since(portfolio_name, start_date):
     tickers = df_txs['ticker'].unique()
     ticker_histories = {}
     for ticker in tickers:
-        hist = database.get_ticker_history(ticker)
+        hist = get_ticker_history(ticker)
         if not hist:
             data, _ = data_fetcher.fetch_with_cache(ticker)
             history = (data or {}).get('history', [])
             if history:
-                database.save_ticker_data(ticker, data)
-                hist = database.get_ticker_history(ticker)
+                save_ticker_data(ticker, data)
+                hist = get_ticker_history(ticker)
         if not hist:
             continue
         df_hist = pd.DataFrame(hist)
@@ -379,7 +386,7 @@ def compute_returns_since(portfolio_name, start_date):
 # Helper functions for common periods
 def get_last_day_possible_returns(portfolio_name):
     import pandas as pd
-    txs = database.get_transactions(portfolio_name)
+    txs = get_transactions(portfolio_name)
     if not txs:
         return {'portfolio': None, 'tickers': {}}
     df_txs = pd.DataFrame(txs)
@@ -388,13 +395,13 @@ def get_last_day_possible_returns(portfolio_name):
     tickers = df_txs['ticker'].unique()
     last_dates = []
     for ticker in tickers:
-        hist = database.get_ticker_history(ticker)
+        hist = get_ticker_history(ticker)
         if not hist:
             data, _ = data_fetcher.fetch_with_cache(ticker)
             history = (data or {}).get('history', [])
             if history:
-                database.save_ticker_data(ticker, data)
-                hist = database.get_ticker_history(ticker)
+                save_ticker_data(ticker, data)
+                hist = get_ticker_history(ticker)
         if not hist:
             continue
         df_hist = pd.DataFrame(hist)
@@ -433,20 +440,20 @@ def get_ytd_returns(portfolio_name):
 
 def get_ticker_returns_since(portfolio_name, ticker, start_date):
     import pandas as pd
-    txs = [t for t in database.get_transactions(portfolio_name) if t.get('ticker') == ticker]
+    txs = [t for t in get_transactions(portfolio_name) if t.get('ticker') == ticker]
     if not txs:
         return None
     df_txs = pd.DataFrame(txs)
     if df_txs.empty or 'date' not in df_txs.columns or 'quantity' not in df_txs.columns or 'price' not in df_txs.columns:
         return None
     df_txs['date'] = pd.to_datetime(df_txs['date'])
-    hist = database.get_ticker_history(ticker)
+    hist = get_ticker_history(ticker)
     if not hist:
         data, _ = data_fetcher.fetch_with_cache(ticker)
         history = (data or {}).get('history', [])
         if history:
-            database.save_ticker_data(ticker, data)
-            hist = database.get_ticker_history(ticker)
+            save_ticker_data(ticker, data)
+            hist = get_ticker_history(ticker)
     if not hist:
         return None
     df_hist = pd.DataFrame(hist)
@@ -478,13 +485,13 @@ def get_ticker_returns_since(portfolio_name, ticker, start_date):
 
 def get_ticker_last_day_possible_returns(portfolio_name, ticker):
     import pandas as pd
-    hist = database.get_ticker_history(ticker)
+    hist = get_ticker_history(ticker)
     if not hist:
         data, _ = data_fetcher.fetch_with_cache(ticker)
         history = (data or {}).get('history', [])
         if history:
-            database.save_ticker_data(ticker, data)
-            hist = database.get_ticker_history(ticker)
+            save_ticker_data(ticker, data)
+            hist = get_ticker_history(ticker)
     if not hist:
         return None
     df_hist = pd.DataFrame(hist)

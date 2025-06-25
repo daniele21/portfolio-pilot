@@ -1,17 +1,42 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from flask import Flask, jsonify, request
 import logging
 from datetime import datetime, timedelta
-import database
-from functools import wraps
-import data_fetcher
+from db.database import init_db, sqlite3, save_ticker_data, get_transactions, save_transactions, delete_portfolio, delete_transaction, get_all_portfolio_names, save_portfolio_status, get_portfolio_status_saved
+from core.portfolio import (
+    compute_portfolio_performance,
+    get_portfolio_status,
+    get_asset_allocation_by_quote_type,
+    get_overall_asset_allocation,
+    get_last_day_possible_returns,
+    get_weekly_returns,
+    get_monthly_returns,
+    get_three_month_returns,
+    get_ytd_returns,
+    compute_ticker_performance,
+    compute_benchmark_performance,
+    get_ticker_last_day_possible_returns,
+    get_ticker_weekly_returns,
+    get_ticker_monthly_returns,
+    get_ticker_three_month_returns,
+    get_ticker_ytd_returns
+)
+from core.report_generator import generate_portfolio_report_with_gemini, generate_multi_ticker_report_with_gemini, generate_ticker_report_with_gemini
+from services.data_fetcher import fetch_with_cache
 import os
 from flask_cors import CORS
-import gemini_helper
-import portfolio
+from core.gemini_helper import parse_transactions
+from core.gemini_cost import GEMINI_2_0_FLASH
 from google.oauth2 import id_token
 from google.auth.transport import requests
-from gemini_cost import GEMINI_2_0_FLASH
 import requests as ext_requests  # To avoid conflict with Flask's request
+from functools import wraps
+import sqlite3
+from db.database import DATABASE_NAME, get_transactions
+
 
 # --- Robust JSON parsing helper ---
 def safe_get_json():
@@ -73,7 +98,7 @@ def add_cors_headers(response):
     return response
 
 # Ensure the database is set up before the server starts
-database.init_db()
+init_db()
 
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
 
@@ -142,8 +167,8 @@ def lookup_ticker(query):
 def get_ticker(ticker_symbol):
     ticker_symbol = ticker_symbol.upper()
     update = request.args.get('update', 'true').lower() == 'true'
-    conn = database.sqlite3.connect(database.DATABASE_NAME)
-    conn.row_factory = database.sqlite3.Row
+    conn = sqlite3.connect(DATABASE_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     # Check if info exists and is recent
     cursor.execute('SELECT * FROM ticker_info WHERE ticker = ?', (ticker_symbol,))
@@ -164,7 +189,7 @@ def get_ticker(ticker_symbol):
         data_is_stale = True
     # If update requested or data is missing/stale, fetch and store
     if update or data_is_stale:
-        data, source = data_fetcher.fetch_with_cache(ticker_symbol, CACHE_DURATION)
+        data, source = fetch_with_cache(ticker_symbol, CACHE_DURATION)
         if not data:
             # Try Yahoo Finance lookup for suggestions
             try:
@@ -179,7 +204,7 @@ def get_ticker(ticker_symbol):
                 conn.close()
                 return jsonify({'error': f'Could not retrieve data for ticker {ticker_symbol}', 'suggestions': [], 'lookup_error': str(e)}), 404
         # Use the unified save_ticker_data function to store info and history
-        database.save_ticker_data(ticker_symbol, data)
+        save_ticker_data(ticker_symbol, data)
         conn.commit()
     # Re-fetch info_row for response
     cursor.execute('SELECT * FROM ticker_info WHERE ticker = ?', (ticker_symbol,))
@@ -226,12 +251,12 @@ def add_transactions(portfolio_name):
     transactions = data.get('transactions')
     if raw:
         try:
-            transactions = gemini_helper.parse_transactions(raw, portfolio_name)
+            transactions = parse_transactions(raw, portfolio_name)
         except Exception as e:
             return jsonify({'error': str(e)}), 400
     if not transactions:
         return jsonify({'error': 'No transactions provided'}), 400
-    inserted = database.save_transactions(portfolio_name, transactions)
+    inserted = save_transactions(portfolio_name, transactions)
     for transaction in inserted:
         transaction['name'] = transaction.get('name')  # Ensure name field is present
     return jsonify({'status': 'saved', 'count': len(inserted), 'transactions': inserted})
@@ -247,10 +272,10 @@ def standardize_and_save():
     if not raw:
         return jsonify({'error': 'No raw text provided'}), 400
     try:
-        transactions = gemini_helper.parse_transactions(raw, portfolio_name)
+        transactions = parse_transactions(raw, portfolio_name)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
-    inserted = database.save_transactions(portfolio_name, transactions)
+    inserted = save_transactions(portfolio_name, transactions)
     for transaction in inserted:
         transaction['name'] = transaction.get('name')
     return jsonify({'status': 'saved', 'count': len(inserted), 'transactions': inserted})
@@ -258,7 +283,7 @@ def standardize_and_save():
 
 @app.route('/api/portfolio/<string:portfolio_name>/performance', methods=['GET'])
 def portfolio_performance(portfolio_name):
-    perf = portfolio.compute_portfolio_performance(portfolio_name)
+    perf = compute_portfolio_performance(portfolio_name)
     return jsonify(perf)
 
 
@@ -270,7 +295,7 @@ def get_portfolio_transactions(portfolio_name):
     Returns a JSON list of transactions.
     """
     try:
-        transactions = database.get_transactions(portfolio_name)
+        transactions = get_transactions(portfolio_name)
         # Include 'name' field in each transaction
         for transaction in transactions:
             transaction['name'] = transaction.get('name')  # Ensure name field is present
@@ -284,8 +309,8 @@ def get_portfolio_transactions(portfolio_name):
 @require_google_token
 def save_portfolio_status_api(portfolio_name):
     """Compute and save the current portfolio status to the DB."""
-    status = portfolio.get_portfolio_status(portfolio_name)
-    database.save_portfolio_status(portfolio_name, status)
+    status = get_portfolio_status(portfolio_name)
+    save_portfolio_status(portfolio_name, status)
     return jsonify({'status': 'saved', 'portfolio': portfolio_name, 'data': status})
 
 
@@ -301,7 +326,7 @@ def view_portfolio_status_options(portfolio_name):
 @app.route('/api/portfolio/<string:portfolio_name>/status/view', methods=['GET'])
 @require_google_token
 def view_portfolio_status_api(portfolio_name):
-    status, last_updated = database.get_portfolio_status_saved(portfolio_name)
+    status, last_updated = get_portfolio_status_saved(portfolio_name)
     if status:
         return jsonify({'portfolio': portfolio_name, 'status': status, 'last_updated': last_updated})
     else:
@@ -313,7 +338,6 @@ def view_portfolio_status_api(portfolio_name):
 def get_portfolio_status_api(portfolio_name):
     """API endpoint to get the saved portfolio status (GET)."""
     try:
-        from database import get_portfolio_status_saved
         status, last_updated = get_portfolio_status_saved(portfolio_name)
         if status is not None:
             # Flatten the response for frontend compatibility
@@ -330,7 +354,7 @@ def get_portfolio_status_api(portfolio_name):
 @require_google_token
 def delete_portfolio_api(portfolio_name):
     try:
-        database.delete_portfolio(portfolio_name)
+        delete_portfolio(portfolio_name)
         return jsonify({'status': 'deleted', 'portfolio': portfolio_name})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -340,7 +364,7 @@ def delete_portfolio_api(portfolio_name):
 @require_google_token
 def delete_transaction_api(portfolio_name, transaction_id):
     try:
-        database.delete_transaction(portfolio_name, transaction_id)
+        delete_transaction(portfolio_name, transaction_id)
         return jsonify({'status': 'deleted', 'transaction_id': transaction_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -350,7 +374,7 @@ def delete_transaction_api(portfolio_name, transaction_id):
 def get_all_portfolios():
     """API endpoint to get all portfolio names."""
     try:
-        names = database.get_all_portfolio_names()
+        names = get_all_portfolio_names()
         return jsonify({'portfolios': names})
     except Exception as e:
         app.logger.error(f"Failed to fetch portfolio names: {e}")
@@ -364,7 +388,7 @@ def get_portfolio_status_live_api(portfolio_name):
     try:
         app.logger.info(f"[LIVE STATUS] Fetching transactions for portfolio: {portfolio_name}")
         # Get all transactions for the portfolio
-        transactions = database.get_transactions(portfolio_name)
+        transactions = get_transactions(portfolio_name)
         app.logger.info(f"[LIVE STATUS] Loaded {len(transactions)} transactions: {transactions}")
         if not transactions or len(transactions) == 0:
             app.logger.warning(f"[LIVE STATUS] No transactions found for portfolio: {portfolio_name}")
@@ -414,7 +438,7 @@ def get_portfolio_status_live_api(portfolio_name):
         app.logger.info(f"[LIVE STATUS] Total portfolio value: {total_value}")
         # Save the computed status to the DB
         status = {'holdings': holdings, 'total_value': total_value}
-        database.save_portfolio_status(portfolio_name, status)
+        save_portfolio_status(portfolio_name, status)
         return jsonify({
             'holdings': holdings,
             'total_value': total_value
@@ -438,7 +462,7 @@ def save_ticker(ticker_symbol):
     history = data.get('history')
     if not info or not history:
         return jsonify({'error': 'Both info and history fields are required.'}), 400
-    conn = database.sqlite3.connect(database.DATABASE_NAME)
+    conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     # Save info
     cursor.execute('''
@@ -509,7 +533,7 @@ def handle_404(e):
 @app.route('/api/portfolio/<string:portfolio_name>/ticker/<string:ticker>/performance', methods=['GET'])
 def ticker_performance_api(portfolio_name, ticker):
     """API endpoint to get the historical value of a single ticker in a portfolio."""
-    perf = portfolio.compute_ticker_performance(portfolio_name, ticker)
+    perf = compute_ticker_performance(portfolio_name, ticker)
     return jsonify(perf)
 
 
@@ -519,7 +543,6 @@ def api_benchmark_performance(ticker):
     API endpoint to get the historical performance of a benchmark ticker (not tied to a portfolio).
     Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ...}, ...]
     """
-    from portfolio import compute_benchmark_performance
     result = compute_benchmark_performance(ticker)
     return jsonify(result)
 
@@ -535,9 +558,9 @@ def get_portfolio_kpis_api(portfolio_name):
       - highest_value_ticker: {symbol, abs_value}
       - worst_ticker: {symbol, pct}
     """
-    perf = portfolio.compute_portfolio_performance(portfolio_name)
+    perf = compute_portfolio_performance(portfolio_name)
     tickers = set()
-    for t in portfolio.database.get_transactions(portfolio_name):
+    for t in get_transactions(portfolio_name):
         if t.get('ticker'):
             tickers.add(t['ticker'])
     # Portfolio value and net value
@@ -553,7 +576,7 @@ def get_portfolio_kpis_api(portfolio_name):
     highest_value_ticker = None
     highest_value = float('-inf')
     for ticker in tickers:
-        ticker_perf = portfolio.compute_ticker_performance(portfolio_name, ticker)
+        ticker_perf = compute_ticker_performance(portfolio_name, ticker)
         if ticker_perf:
             last_t = ticker_perf[-1]
             pct = last_t.get('pct', 0.0)
@@ -586,9 +609,9 @@ def get_portfolio_allocation_api(portfolio_name):
     """
     grouping = request.args.get('grouping', 'overall')
     if grouping == 'quoteType':
-        data = portfolio.get_asset_allocation_by_quote_type(portfolio_name)
+        data = get_asset_allocation_by_quote_type(portfolio_name)
     else:
-        data = portfolio.get_overall_asset_allocation(portfolio_name)
+        data = get_overall_asset_allocation(portfolio_name)
     return jsonify({'grouping': grouping, 'allocation': data})
 
 
@@ -604,11 +627,11 @@ def get_portfolio_returns_api(portfolio_name):
         'monthly': { ... }
     }
     """
-    y = portfolio.get_last_day_possible_returns(portfolio_name)
-    w = portfolio.get_weekly_returns(portfolio_name)
-    m = portfolio.get_monthly_returns(portfolio_name)
-    three_month = portfolio.get_three_month_returns(portfolio_name)
-    ytd = portfolio.get_ytd_returns(portfolio_name)
+    y = get_last_day_possible_returns(portfolio_name)
+    w = get_weekly_returns(portfolio_name)
+    m = get_monthly_returns(portfolio_name)
+    three_month = get_three_month_returns(portfolio_name)
+    ytd = get_ytd_returns(portfolio_name)
     return jsonify({
         'yesterday': y,
         'weekly': w,
@@ -628,11 +651,11 @@ def get_portfolio_return_kpis_api(portfolio_name):
       - weekly_return: {portfolio, tickers}
       - monthly_return: {portfolio, tickers}
     """
-    y = portfolio.get_last_day_possible_returns(portfolio_name)
-    w = portfolio.get_weekly_returns(portfolio_name)
-    m = portfolio.get_monthly_returns(portfolio_name)
-    three_month = portfolio.get_three_month_returns(portfolio_name)
-    ytd = portfolio.get_ytd_returns(portfolio_name)
+    y = get_last_day_possible_returns(portfolio_name)
+    w = get_weekly_returns(portfolio_name)
+    m = get_monthly_returns(portfolio_name)
+    three_month = get_three_month_returns(portfolio_name)
+    ytd = get_ytd_returns(portfolio_name)
     # For KPI cards, just return the portfolio return_pct for each period
     return jsonify({
         'yesterday_return': y['portfolio']['return_pct'] if y['portfolio'] else None,
@@ -659,8 +682,6 @@ def generate_portfolio_report_api(portfolio_name):
     Accepts 'force' as a query param or in the JSON body.
     Supports both GET and POST requests.
     """
-    from report_generator import generate_portfolio_report_with_gemini
-    import portfolio as pf
     if request.method == 'POST':
         data = safe_get_json()
     else:
@@ -668,15 +689,15 @@ def generate_portfolio_report_api(portfolio_name):
     # Try to get status, returns, performance, tickers from request or compute them
     status = data.get('status') if isinstance(data, dict) else None
     if not status:
-        status = pf.get_portfolio_status(portfolio_name)
+        status = get_portfolio_status(portfolio_name)
     returns = data.get('returns') if isinstance(data, dict) else None
     if not returns:
         returns = {
-            'yesterday': pf.get_last_day_possible_returns(portfolio_name),
-            'weekly': pf.get_weekly_returns(portfolio_name),
-            'monthly': pf.get_monthly_returns(portfolio_name),
-            'three_month': pf.get_three_month_returns(portfolio_name),
-            'ytd': pf.get_ytd_returns(portfolio_name)
+            'yesterday': get_last_day_possible_returns(portfolio_name),
+            'weekly': get_weekly_returns(portfolio_name),
+            'monthly': get_monthly_returns(portfolio_name),
+            'three_month': get_three_month_returns(portfolio_name),
+            'ytd': get_ytd_returns(portfolio_name)
         }
     # Parse 'force' from query string or JSON body
     force = False
@@ -708,13 +729,11 @@ def generate_multi_ticker_report_api(portfolio_name):
       - returns_dict: dict mapping ticker to returns (optional, will compute if not provided)
       - model_name: Gemini model name (optional)
     """
-    from report_generator import generate_multi_ticker_report_with_gemini
-    import portfolio as pf
     data = safe_get_json()
     tickers = data.get('tickers')
     if not tickers or not isinstance(tickers, list) or len(tickers) < 2:
         return jsonify({'error': 'At least two tickers must be provided.'}), 400
-    status = data.get('status') or pf.get_portfolio_status(portfolio_name)
+    status = data.get('status') or get_portfolio_status(portfolio_name)
     holdings_list = data.get('holdings_list')
     if not holdings_list:
         # Compute holdings for each ticker
@@ -729,11 +748,11 @@ def generate_multi_ticker_report_api(portfolio_name):
         returns_dict = {}
         for t in tickers:
             returns_dict[t] = {
-                'yesterday': pf.get_ticker_last_day_possible_returns(portfolio_name, t),
-                'weekly': pf.get_ticker_weekly_returns(portfolio_name, t),
-                'monthly': pf.get_ticker_monthly_returns(portfolio_name, t),
-                'three_month': pf.get_ticker_three_month_returns(portfolio_name, t),
-                'ytd': pf.get_ticker_ytd_returns(portfolio_name, t)
+                'yesterday': get_ticker_last_day_possible_returns(portfolio_name, t),
+                'weekly': get_ticker_weekly_returns(portfolio_name, t),
+                'monthly': get_ticker_monthly_returns(portfolio_name, t),
+                'three_month': get_ticker_three_month_returns(portfolio_name, t),
+                'ytd': get_ticker_ytd_returns(portfolio_name, t)
             }
     model_name = data.get('model_name') or GEMINI_2_0_FLASH
     # Call the report generator
@@ -759,9 +778,6 @@ def generate_ticker_report_api(portfolio_name, ticker):
     Accepts 'force' as a query param or in the JSON body.
     If not provided, will compute/fetch them.
     """
-    from report_generator import generate_ticker_report_with_gemini
-    import portfolio as pf
-    import database as db
     if request.method == 'POST':
         data = safe_get_json()
     else:
@@ -769,7 +785,7 @@ def generate_ticker_report_api(portfolio_name, ticker):
     # Try to get holdings, weight, status, returns, ticker_performance from request or compute them
     status = data.get('status') if isinstance(data, dict) else None
     if not status:
-        status = pf.get_portfolio_status(portfolio_name)
+        status = get_portfolio_status(portfolio_name)
     holdings_list = status.get('holdings', [])
     holding = next((h for h in holdings_list if h['ticker'].upper() == ticker.upper()), None)
     holdings = holding or {}
@@ -779,11 +795,11 @@ def generate_ticker_report_api(portfolio_name, ticker):
     if not returns:
         # Try to get all returns periods for this ticker
         returns = {}
-        y = pf.get_ticker_last_day_possible_returns(portfolio_name, ticker)
-        w = pf.get_ticker_weekly_returns(portfolio_name, ticker)
-        m = pf.get_ticker_monthly_returns(portfolio_name, ticker)
-        three_m = pf.get_ticker_three_month_returns(portfolio_name, ticker)
-        ytd = pf.get_ticker_ytd_returns(portfolio_name, ticker)
+        y = get_ticker_last_day_possible_returns(portfolio_name, ticker)
+        w = get_ticker_weekly_returns(portfolio_name, ticker)
+        m = get_ticker_monthly_returns(portfolio_name, ticker)
+        three_m = get_ticker_three_month_returns(portfolio_name, ticker)
+        ytd = get_ticker_ytd_returns(portfolio_name, ticker)
         returns = {
             'yesterday': y,
             'weekly': w,
@@ -799,8 +815,8 @@ def generate_ticker_report_api(portfolio_name, ticker):
     elif isinstance(data, dict) and 'force' in data:
         force = bool(data.get('force'))
     # Fetch ticker_info from DB
-    conn = db.sqlite3.connect(db.DATABASE_NAME)
-    conn.row_factory = db.sqlite3.Row
+    conn = sqlite3.connect(DATABASE_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM ticker_info WHERE ticker = ?', (ticker.upper(),))
     ticker_info_row = cursor.fetchone()

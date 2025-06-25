@@ -1,9 +1,9 @@
 import json
 
 import pandas as pd
-import gemini_helper
-from gemini_cost import GEMINI_2_0_FLASH, GEMINI_2_5_FLASH, calculate_gemini_cost
-import database
+from core.gemini_cost import GEMINI_2_0_FLASH, GEMINI_2_5_FLASH, calculate_gemini_cost
+from core.gemini_helper import generate_grounded_report_response
+from db.database import get_ticker_report, save_ticker_report, get_portfolio_report, save_portfolio_report
 from datetime import datetime
 
 # This module provides functions to generate a Gemini-based report for a given ticker in a portfolio.
@@ -17,7 +17,7 @@ def generate_ticker_report_with_gemini(ticker, holdings, weight, status, returns
     today = datetime.now().date()
     # Try to load from DB if not force
     if not force:
-        existing_report = database.get_ticker_report(ticker)
+        existing_report = get_ticker_report(ticker)
         if existing_report is not None:
             ref_date = existing_report.get('reference_date')
             if ref_date:
@@ -150,7 +150,7 @@ IMPORTANT:
 - Use Markdown bold (**text**) for all key numbers, ticker symbols, and section headers in your text. For example, write **AAPL** or **12.5%** or **Valuation Summary** where appropriate.
 - Generate just the JSON object without any additional text or explanation.
 """
-    response = gemini_helper.generate_grounded_report_response(prompt, model_name=GEMINI_2_0_FLASH)
+    response = generate_grounded_report_response(prompt, model_name=GEMINI_2_0_FLASH)
     answer = response.get('text')
     cost = response.get('cost', None)
     if answer is not None:
@@ -158,7 +158,7 @@ IMPORTANT:
         answer = json.loads(answer)
         # Save the report to the database
         reference_date = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-        database.save_ticker_report(ticker, answer, reference_date, cost)
+        save_ticker_report(ticker, answer, reference_date, cost)
         print(f"\033[91m[TickerReport] Generated new report for '{ticker}' and saved to DB (date: {today})\033[0m")
     return answer, cost
 
@@ -171,7 +171,7 @@ def generate_portfolio_report_with_gemini(portfolio_name, status, returns, force
     today = datetime.now().date()
     
     if not force:
-        existing_report = database.get_portfolio_report(portfolio_name)
+        existing_report = get_portfolio_report(portfolio_name)
         # Only use the report if its reference_date is today
         if existing_report is not None:
             ref_date = existing_report.get('reference_date')
@@ -279,7 +279,7 @@ Format your response as a valid JSON object as follows:
 IMPORTANT: Use Markdown bold (**text**) and italic(*text*) when necessary to highlight the text and where appropriate.
 """
     # Call Gemini LLM via gemini_helper (assume gemini_helper.generate_json_response exists)
-    response = gemini_helper.generate_grounded_report_response(prompt, model_name=GEMINI_2_5_FLASH)
+    response = generate_grounded_report_response(prompt, model_name=GEMINI_2_5_FLASH)
     answer = response.get('text')
     cost = response.get('cost', None)
     if answer is not None:
@@ -287,7 +287,7 @@ IMPORTANT: Use Markdown bold (**text**) and italic(*text*) when necessary to hig
         answer = json.loads(answer)
         # Save the report to the database
         reference_date = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-        database.save_portfolio_report(portfolio_name, answer, reference_date, cost)
+        save_portfolio_report(portfolio_name, answer, reference_date, cost)
         print(f"\033[91m[PortfolioReport] Generated new report for '{portfolio_name}' and saved to DB (date: {today})\033[0m")
     return answer, cost
 
@@ -345,7 +345,7 @@ Format your response as a JSON object mapping each ticker symbol to its report, 
 
 IMPORTANT: Use Markdown bold (**text**) for all key numbers, ticker symbols, and section headers in your text.
 """
-    response = gemini_helper.generate_grounded_report_response(prompt, model_name=model_name)
+    response = generate_grounded_report_response(prompt, model_name=model_name)
     # Attach cost info to the report if available
     token_usage = getattr(response, 'token_usage', None) or getattr(response, 'usage', None) or {}
     in_tokens = token_usage.get('input_tokens', 0)

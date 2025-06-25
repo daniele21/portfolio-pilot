@@ -1,7 +1,10 @@
 import os
 import google.generativeai as genai
 
-from backend.gemini_cost import GEMINI_2_5_FLASH_LITE_PREVIEW_06_17
+from core.gemini_cost import GEMINI_2_5_FLASH_LITE_PREVIEW_06_17
+from core.gemini_cost import calculate_gemini_cost
+from db.database import *
+from services.data_fetcher import *
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
@@ -115,7 +118,6 @@ def generate_grounded_report_response(prompt: str, model_name: str = "gemini-2.5
     """
     from google import genai
     from google.genai import types
-    from gemini_cost import calculate_gemini_cost
     client = genai.Client()
     # 1) Define the grounding tool
     grounding_tool = types.Tool(

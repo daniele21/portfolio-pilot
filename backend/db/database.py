@@ -1,7 +1,7 @@
 import sqlite3
 import json
 from datetime import datetime
-import data_fetcher
+from services import data_fetcher
 
 DATABASE_NAME = 'ticker_data.db'
 
