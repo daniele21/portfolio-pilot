@@ -8,6 +8,7 @@ import InitialChoiceModal from './components/InitialChoiceModal';
 import PortfolioStatusPage from './pages/PortfolioStatusPage';
 import ReportPage from './pages/ReportPage';
 import TickerLookupPage from './pages/TickerLookupPage';
+import AssetsPage from './pages/AssetsPage';
 import { HomeIcon, ChartPieIcon, ChatBubbleLeftEllipsisIcon, Cog6ToothIcon, ClipboardDocumentListIcon, MagnifyingGlassCircleIcon, ArrowRightOnRectangleIcon, UserCircleIcon } from '@heroicons/react/24/outline';
 import { resetPortfolioDataToMocks, isPortfolioInitialized, markPortfolioAsInitialized, initialLoad as initialPortfolioLoad } from './services/portfolioService';
 import { useAuth } from './AuthContext';
@@ -89,6 +90,7 @@ const App: React.FC = () => {
 
   const navItems = [
     { path: '/', label: 'Home', icon: HomeIcon },
+    { path: '/assets', label: 'Assets', icon: ChatBubbleLeftEllipsisIcon }, // New Assets nav item
     { path: '/report', label: 'AI Report', icon: ChartPieIcon },
     { path: '/transactions', label: 'Transactions', icon: ClipboardDocumentListIcon },
     { path: '/ticker-lookup', label: 'Ticker Lookup', icon: MagnifyingGlassCircleIcon },
@@ -167,6 +169,7 @@ const App: React.FC = () => {
                 <Route path="/portfolio-status" element={<PortfolioStatusPage />} />
                 <Route path="/ticker/:ticker" element={<TickerInfoPage />} />
                 <Route path="/ticker-lookup" element={<TickerLookupPage />} />
+                <Route path="/assets" element={<AssetsPage />} /> {/* New route for AssetsPage */}
                 {/* Remove CopilotPage route */}
             </Routes>
         )}

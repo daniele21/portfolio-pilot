@@ -35,6 +35,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 import requests as ext_requests  # To avoid conflict with Flask's request
 from functools import wraps
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # --- Robust JSON parsing helper ---
@@ -370,9 +371,13 @@ def delete_transaction_api(portfolio_name, transaction_id):
 
 @app.route('/api/portfolios', methods=['GET'])
 def get_all_portfolios():
-    """API endpoint to get all portfolio names."""
+    """API endpoint to get all portfolio names, with debug logging for DB path and results."""
+    import os
+    from db.database import DATABASE_NAME
     try:
         names = get_all_portfolio_names()
+        app.logger.info(f"[DEBUG] /api/portfolios using DB: {os.path.abspath(DATABASE_NAME)}")
+        app.logger.info(f"[DEBUG] /api/portfolios result: {names}")
         return jsonify({'portfolios': names})
     except Exception as e:
         app.logger.error(f"Failed to fetch portfolio names: {e}")
@@ -523,8 +528,19 @@ def get_portfolio_kpis_api(portfolio_name):
     worst_pct = float('inf')
     highest_value_ticker = None
     highest_value = float('-inf')
-    for ticker in tickers:
-        ticker_perf = compute_ticker_performance(portfolio_name, ticker)
+    ticker_perf_results = {}
+    # Parallelize compute_ticker_performance calls
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_ticker = {executor.submit(compute_ticker_performance, portfolio_name, ticker): ticker for ticker in tickers}
+        for future in as_completed(future_to_ticker):
+            ticker = future_to_ticker[future]
+            try:
+                ticker_perf = future.result()
+                ticker_perf_results[ticker] = ticker_perf
+            except Exception as exc:
+                app.logger.error(f"Error computing performance for ticker {ticker}: {exc}")
+                ticker_perf_results[ticker] = []
+    for ticker, ticker_perf in ticker_perf_results.items():
         if ticker_perf:
             last_t = ticker_perf[-1]
             pct = last_t.get('pct', 0.0)
