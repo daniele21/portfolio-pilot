@@ -338,7 +338,7 @@ def compute_returns_since(portfolio_name, start_date):
         return {'portfolio': None, 'tickers': {}}
     start_dt = all_dates[0]
     end_dt = all_dates[-1]
-    print(f"[DEBUG] compute_returns_since: start_dt={start_dt}, end_dt={end_dt}")
+    # print(f"[DEBUG] compute_returns_since: start_dt={start_dt}, end_dt={end_dt}")
     # Portfolio values
     def get_portfolio_value(dt):
         total = 0.0
@@ -352,7 +352,7 @@ def compute_returns_since(portfolio_name, start_date):
         return total
     start_value = get_portfolio_value(start_dt)
     end_value = get_portfolio_value(end_dt)
-    print(f"[DEBUG] compute_returns_since: start_value={start_value}, end_value={end_value}")
+    # print(f"[DEBUG] compute_returns_since: start_value={start_value}, end_value={end_value}")
     portfolio_return = ((end_value - start_value) / start_value * 100) if start_value else 0.0
     # Per-ticker values
     ticker_returns = {}

@@ -2,6 +2,7 @@ import sqlite3
 import json
 from datetime import datetime
 from services import data_fetcher
+import time
 
 DATABASE_NAME = 'ticker_data.db'
 
@@ -287,105 +288,110 @@ def get_ticker_data(ticker_symbol):
     return None, None
 
 
-def save_ticker_data(ticker_symbol, data):
+def save_ticker_data(ticker_symbol, data, max_retries=5, base_delay=0.2):
     """
     Saves or updates the data for a specific ticker in the database, including ticker_info and ticker_history tables.
     The `OR REPLACE` clause handles both new insertions and updates.
+    Implements retry logic to handle sqlite3.OperationalError: database is locked.
     """
-    conn = sqlite3.connect(DATABASE_NAME)
-    cursor = conn.cursor()
+    attempt = 0
+    while True:
+        try:
+            conn = sqlite3.connect(DATABASE_NAME)
+            cursor = conn.cursor()
 
-    # Serialize the data dictionary into a JSON string for storage
-    data_json = json.dumps(data)
-    current_time = datetime.now().isoformat()
+            # Serialize the data dictionary into a JSON string for storage
+            data_json = json.dumps(data)
+            current_time = datetime.now().isoformat()
 
-    # Save to tickers table (raw data)
-    cursor.execute('''
-        INSERT OR REPLACE INTO tickers (ticker, data, last_updated)
-        VALUES (?, ?, ?)
-    ''', (ticker_symbol, data_json, current_time))
-
-    # Save to ticker_info table (flat fields)
-    info = data.get('info', {})
-    # Expanded list of fields to match the provided info dict
-    ticker_info_fields = [
-        'ticker', 'shortName', 'longName', 'symbol', 'sector', 'sectorKey', 'sectorDisp', 'industry', 'industryKey', 'industryDisp',
-        'country', 'address1', 'address2', 'city', 'zip', 'phone', 'website', 'fullTimeEmployees', 'longBusinessSummary',
-        'maxAge', 'priceHint', 'previousClose', 'open', 'dayLow', 'dayHigh', 'regularMarketPreviousClose', 'regularMarketOpen',
-        'regularMarketDayLow', 'regularMarketDayHigh', 'dividendRate', 'dividendYield', 'exDividendDate', 'payoutRatio', 'beta',
-        'trailingPE', 'volume', 'regularMarketVolume', 'averageVolume', 'averageVolume10days', 'averageDailyVolume10Day', 'bid', 'ask',
-        'marketCap', 'fiftyTwoWeekLow', 'fiftyTwoWeekHigh', 'priceToSalesTrailing12Months', 'fiftyDayAverage', 'twoHundredDayAverage',
-        'trailingAnnualDividendRate', 'trailingAnnualDividendYield', 'currency', 'tradeable', 'enterpriseValue', 'forwardPE',
-        'profitMargins', 'floatShares', 'sharesOutstanding', 'heldPercentInsiders', 'heldPercentInstitutions', 'impliedSharesOutstanding',
-        'bookValue', 'priceToBook', 'lastFiscalYearEnd', 'nextFiscalYearEnd', 'mostRecentQuarter', 'earningsQuarterlyGrowth',
-        'netIncomeToCommon', 'trailingEps', 'enterpriseToRevenue', 'enterpriseToEbitda',
-        'lastDividendValue', 'lastDividendDate', 'quoteType', 'currentPrice', 'targetHighPrice', 'targetLowPrice', 'targetMeanPrice',
-        'targetMedianPrice', 'recommendationMean', 'recommendationKey', 'numberOfAnalystOpinions', 'totalCash', 'totalCashPerShare',
-        'ebitda', 'totalDebt', 'quickRatio', 'currentRatio', 'totalRevenue', 'debtToEquity', 'revenuePerShare', 'returnOnAssets',
-        'returnOnEquity', 'grossProfits', 'freeCashflow', 'operatingCashflow', 'earningsGrowth', 'revenueGrowth', 'grossMargins',
-        'ebitdaMargins', 'operatingMargins', 'financialCurrency', 'language', 'region', 'typeDisp', 'quoteSourceName', 'triggerable',
-        'customPriceAlertConfidence', 'regularMarketChange', 'regularMarketDayRange', 'fullExchangeName', 'averageDailyVolume3Month',
-        'fiftyTwoWeekLowChange', 'fiftyTwoWeekLowChangePercent', 'fiftyTwoWeekRange', 'fiftyTwoWeekHighChange',
-        'fiftyTwoWeekHighChangePercent', 'fiftyTwoWeekChangePercent', 'epsTrailingTwelveMonths', 'epsCurrentYear', 'priceEpsCurrentYear',
-        'fiftyDayAverageChange', 'fiftyDayAverageChangePercent', 'twoHundredDayAverageChange', 'twoHundredDayAverageChangePercent',
-        'sourceInterval', 'exchangeDataDelayedBy', 'averageAnalystRating', 'cryptoTradeable', 'corporateActions', 'regularMarketTime',
-        'exchange', 'messageBoardId', 'exchangeTimezoneName', 'exchangeTimezoneShortName', 'gmtOffSetMilliseconds', 'market',
-        'esgPopulated', 'hasPrePostMarketData', 'firstTradeDateMilliseconds', 'regularMarketChangePercent', 'regularMarketPrice',
-        'marketState', 'trailingPegRatio'
-    ]
-    # Map info fields that start with a digit to valid SQL column names (prefix with underscore)
-    def safe_sql_col(col):
-        if col and col[0].isdigit():
-            return f'_{col}'
-        return col
-    # Build mapping from info dict keys to DB columns
-    info_key_to_col = {k: safe_sql_col(k) for k in ticker_info_fields}
-    # Ensure table has all columns (add missing columns if needed)
-    existing_cols = set(row[1] for row in cursor.execute("PRAGMA table_info(ticker_info)").fetchall())
-    for col in info_key_to_col.values():
-        if col not in existing_cols:
-            cursor.execute(f"ALTER TABLE ticker_info ADD COLUMN {col} TEXT")
-    # Prepare values for insert/update, using mapped column names
-    def serialize_if_needed(val):
-        if isinstance(val, (list, dict)):
-            return None  # Skip lists/dicts entirely
-        return val
-    values = [
-        ticker_symbol
-    ] + [serialize_if_needed(info.get(k)) for k in ticker_info_fields[1:]] + [current_time]
-    # Build the SQL dynamically, using mapped column names
-    sql_cols = ', '.join([safe_sql_col(f) for f in ticker_info_fields] + ['last_updated'])
-    sql_qs = ', '.join(['?'] * (len(ticker_info_fields) + 1))
-    cursor.execute(f'''
-        INSERT OR REPLACE INTO ticker_info ({sql_cols})
-        VALUES ({sql_qs})
-    ''', values)
-
-    # Save to ticker_history table (append only new dates, or update on conflict)
-    history = data.get('history', [])
-    if history:
-        for h in history:
-            h_date = h.get('date') or h.get('Date')
+            # Save to tickers table (raw data)
             cursor.execute('''
-                INSERT INTO ticker_history (ticker, date, open, close, high, low, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(ticker, date) DO UPDATE SET
-                    open=excluded.open,
-                    close=excluded.close,
-                    high=excluded.high,
-                    low=excluded.low,
-                    volume=excluded.volume
-            ''', (
-                ticker_symbol,
-                h_date,
-                h.get('open') if 'open' in h else h.get('Open'),
-                h.get('close') if 'close' in h else h.get('Close'),
-                h.get('high') if 'high' in h else h.get('High'),
-                h.get('low') if 'low' in h else h.get('Low'),
-                h.get('volume') if 'volume' in h else h.get('Volume')
-            ))
-    conn.commit()
-    conn.close()
+                INSERT OR REPLACE INTO tickers (ticker, data, last_updated)
+                VALUES (?, ?, ?)
+            ''', (ticker_symbol, data_json, current_time))
+
+            # Save to ticker_info table (flat fields)
+            info = data.get('info', {})
+            ticker_info_fields = [
+                'ticker', 'shortName', 'longName', 'symbol', 'sector', 'sectorKey', 'sectorDisp', 'industry', 'industryKey', 'industryDisp',
+                'country', 'address1', 'address2', 'city', 'zip', 'phone', 'website', 'fullTimeEmployees', 'longBusinessSummary',
+                'maxAge', 'priceHint', 'previousClose', 'open', 'dayLow', 'dayHigh', 'regularMarketPreviousClose', 'regularMarketOpen',
+                'regularMarketDayLow', 'regularMarketDayHigh', 'dividendRate', 'dividendYield', 'exDividendDate', 'payoutRatio', 'beta',
+                'trailingPE', 'volume', 'regularMarketVolume', 'averageVolume', 'averageVolume10days', 'averageDailyVolume10Day', 'bid', 'ask',
+                'marketCap', 'fiftyTwoWeekLow', 'fiftyTwoWeekHigh', 'priceToSalesTrailing12Months', 'fiftyDayAverage', 'twoHundredDayAverage',
+                'trailingAnnualDividendRate', 'trailingAnnualDividendYield', 'currency', 'tradeable', 'enterpriseValue', 'forwardPE',
+                'profitMargins', 'floatShares', 'sharesOutstanding', 'heldPercentInsiders', 'heldPercentInstitutions', 'impliedSharesOutstanding',
+                'bookValue', 'priceToBook', 'lastFiscalYearEnd', 'nextFiscalYearEnd', 'mostRecentQuarter', 'earningsQuarterlyGrowth',
+                'netIncomeToCommon', 'trailingEps', 'enterpriseToRevenue', 'enterpriseToEbitda',
+                'lastDividendValue', 'lastDividendDate', 'quoteType', 'currentPrice', 'targetHighPrice', 'targetLowPrice', 'targetMeanPrice',
+                'targetMedianPrice', 'recommendationMean', 'recommendationKey', 'numberOfAnalystOpinions', 'totalCash', 'totalCashPerShare',
+                'ebitda', 'totalDebt', 'quickRatio', 'currentRatio', 'totalRevenue', 'debtToEquity', 'revenuePerShare', 'returnOnAssets',
+                'returnOnEquity', 'grossProfits', 'freeCashflow', 'operatingCashflow', 'earningsGrowth', 'revenueGrowth', 'grossMargins',
+                'ebitdaMargins', 'operatingMargins', 'financialCurrency', 'language', 'region', 'typeDisp', 'quoteSourceName', 'triggerable',
+                'customPriceAlertConfidence', 'regularMarketChange', 'regularMarketDayRange', 'fullExchangeName', 'averageDailyVolume3Month',
+                'fiftyTwoWeekLowChange', 'fiftyTwoWeekLowChangePercent', 'fiftyTwoWeekRange', 'fiftyTwoWeekHighChange',
+                'fiftyTwoWeekHighChangePercent', 'fiftyTwoWeekChangePercent', 'epsTrailingTwelveMonths', 'epsCurrentYear', 'priceEpsCurrentYear',
+                'fiftyDayAverageChange', 'fiftyDayAverageChangePercent', 'twoHundredDayAverageChange', 'twoHundredDayAverageChangePercent',
+                'sourceInterval', 'exchangeDataDelayedBy', 'averageAnalystRating', 'cryptoTradeable', 'corporateActions', 'regularMarketTime',
+                'exchange', 'messageBoardId', 'exchangeTimezoneName', 'exchangeTimezoneShortName', 'gmtOffSetMilliseconds', 'market',
+                'esgPopulated', 'hasPrePostMarketData', 'firstTradeDateMilliseconds', 'regularMarketChangePercent', 'regularMarketPrice',
+                'marketState', 'trailingPegRatio'
+            ]
+            def safe_sql_col(col):
+                if col and col[0].isdigit():
+                    return f'_{col}'
+                return col
+            info_key_to_col = {k: safe_sql_col(k) for k in ticker_info_fields}
+            existing_cols = set(row[1] for row in cursor.execute("PRAGMA table_info(ticker_info)").fetchall())
+            for col in info_key_to_col.values():
+                if col not in existing_cols:
+                    cursor.execute(f"ALTER TABLE ticker_info ADD COLUMN {col} TEXT")
+            def serialize_if_needed(val):
+                if isinstance(val, (list, dict)):
+                    return None
+                return val
+            values = [
+                ticker_symbol
+            ] + [serialize_if_needed(info.get(k)) for k in ticker_info_fields[1:]] + [current_time]
+            sql_cols = ', '.join([safe_sql_col(f) for f in ticker_info_fields] + ['last_updated'])
+            sql_qs = ', '.join(['?'] * (len(ticker_info_fields) + 1))
+            cursor.execute(f'''
+                INSERT OR REPLACE INTO ticker_info ({sql_cols})
+                VALUES ({sql_qs})
+            ''', values)
+            history = data.get('history', [])
+            if history:
+                for h in history:
+                    h_date = h.get('date') or h.get('Date')
+                    cursor.execute('''
+                        INSERT INTO ticker_history (ticker, date, open, close, high, low, volume)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(ticker, date) DO UPDATE SET
+                            open=excluded.open,
+                            close=excluded.close,
+                            high=excluded.high,
+                            low=excluded.low,
+                            volume=excluded.volume
+                    ''', (
+                        ticker_symbol,
+                        h_date,
+                        h.get('open') if 'open' in h else h.get('Open'),
+                        h.get('close') if 'close' in h else h.get('Close'),
+                        h.get('high') if 'high' in h else h.get('High'),
+                        h.get('low') if 'low' in h else h.get('Low'),
+                        h.get('volume') if 'volume' in h else h.get('Volume')
+                    ))
+            conn.commit()
+            conn.close()
+            break  # Success
+        except sqlite3.OperationalError as e:
+            if 'database is locked' in str(e) and attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                attempt += 1
+                continue
+            else:
+                raise
 
 
 def create_portfolio(name):
@@ -400,7 +406,7 @@ def create_portfolio(name):
     conn.close()
 
 
-def save_transactions(portfolio, transactions):
+def save_transactions(portfolio, transactions, max_retries=5, base_delay=0.2):
     """Save a list of transactions for a portfolio. For each unique ticker, fetch and store ticker data. Returns list of inserted transaction dicts with IDs."""
     # Ensure the portfolio exists in the portfolios table
     create_portfolio(portfolio)
@@ -446,7 +452,7 @@ def save_transactions(portfolio, transactions):
         try:
             data, _ = data_fetcher.fetch_with_cache(ticker)
             if data:
-                save_ticker_data(ticker, data)
+                save_ticker_data(ticker, data, max_retries=max_retries, base_delay=base_delay)
         except Exception as e:
             print(f"[save_transactions] Failed to fetch/store ticker data for {ticker}: {e}")
     return inserted

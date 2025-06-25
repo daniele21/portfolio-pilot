@@ -2,10 +2,11 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, make_response
 import logging
 from datetime import datetime, timedelta
 from db.database import init_db, sqlite3, save_ticker_data, get_transactions, save_transactions, delete_portfolio, delete_transaction, get_all_portfolio_names, save_portfolio_status, get_portfolio_status_saved
+from db.database import DATABASE_NAME
 from core.portfolio import (
     compute_portfolio_performance,
     get_portfolio_status,
@@ -34,8 +35,6 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 import requests as ext_requests  # To avoid conflict with Flask's request
 from functools import wraps
-import sqlite3
-from db.database import DATABASE_NAME, get_transactions
 
 
 # --- Robust JSON parsing helper ---
@@ -205,7 +204,6 @@ def get_ticker(ticker_symbol):
                 return jsonify({'error': f'Could not retrieve data for ticker {ticker_symbol}', 'suggestions': [], 'lookup_error': str(e)}), 404
         # Use the unified save_ticker_data function to store info and history
         save_ticker_data(ticker_symbol, data)
-        conn.commit()
     # Re-fetch info_row for response
     cursor.execute('SELECT * FROM ticker_info WHERE ticker = ?', (ticker_symbol,))
     info_row = cursor.fetchone()
@@ -462,58 +460,8 @@ def save_ticker(ticker_symbol):
     history = data.get('history')
     if not info or not history:
         return jsonify({'error': 'Both info and history fields are required.'}), 400
-    conn = sqlite3.connect(DATABASE_NAME, timeout=15)
-    cursor = conn.cursor()
-    # Save info
-    cursor.execute('''
-        INSERT OR REPLACE INTO ticker_info (
-            ticker, shortName, longName, symbol, sector, industry, country, website, marketCap, currency, exchange, quoteType, regularMarketPrice, previousClose, open, dayHigh, dayLow, fiftyTwoWeekHigh, fiftyTwoWeekLow, volume, averageVolume, trailingPE, forwardPE, dividendYield, longBusinessSummary, last_updated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        ticker_symbol,
-        info.get('shortName'),
-        info.get('longName'),
-        info.get('symbol'),
-        info.get('sector'),
-        info.get('industry'),
-        info.get('country'),
-        info.get('website'),
-        info.get('marketCap'),
-        info.get('currency'),
-        info.get('exchange'),
-        info.get('quoteType'),
-        info.get('regularMarketPrice'),
-        info.get('previousClose'),
-        info.get('open'),
-        info.get('dayHigh'),
-        info.get('dayLow'),
-        info.get('fiftyTwoWeekHigh'),
-        info.get('fiftyTwoWeekLow'),
-        info.get('volume'),
-        info.get('averageVolume'),
-        info.get('trailingPE'),
-        info.get('forwardPE'),
-        info.get('dividendYield'),
-        info.get('longBusinessSummary'),
-        info.get('last_updated') or datetime.now().isoformat()
-    ))
-    # Save history (delete old, insert new)
-    cursor.execute('DELETE FROM ticker_history WHERE ticker = ?', (ticker_symbol,))
-    for h in history:
-        cursor.execute('''
-            INSERT INTO ticker_history (ticker, date, open, close, high, low, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            ticker_symbol,
-            h.get('date'),
-            h.get('open'),
-            h.get('close'),
-            h.get('high'),
-            h.get('low'),
-            h.get('volume')
-        ))
-    conn.commit()
-    conn.close()
+    # Use the unified save_ticker_data function with retry logic
+    save_ticker_data(ticker_symbol, {'info': info, 'history': history})
     return jsonify({'status': 'saved', 'ticker': ticker_symbol})
 
 

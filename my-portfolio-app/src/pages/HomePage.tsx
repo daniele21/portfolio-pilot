@@ -58,6 +58,7 @@ const HomePage: React.FC = () => {
   const [transactionLoading, setTransactionLoading] = useState(false);
   const [tickerLoading, setTickerLoading] = useState(false);
   const [benchmarkLoading, setBenchmarkLoading] = useState(false);
+  const [maskPortfolioValue, setMaskPortfolioValue] = useState(true);
 
   // Fetch all portfolio names
   const {
@@ -88,7 +89,7 @@ const HomePage: React.FC = () => {
     enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
   });
 
-  // --- Portfolio Performance: Use React Query, memoize filtered and derived data ---
+  // --- Portfolio Performance: Use React Query, fetch filtered data from backend API ---
   const {
     data: portfolioPerformance = [],
     isLoading: perfLoading,
@@ -311,10 +312,10 @@ const HomePage: React.FC = () => {
         cards.push({
           id: 'portfolio_value',
           name: 'Portfolio Value',
-          value: k.portfolio_value.abs_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}),
+          value: maskPortfolioValue ? '**.***,**' : k.portfolio_value.abs_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}),
           unit: '',
           status: TrafficLightStatus.NEUTRAL,
-          description: k.portfolio_value.net_value !== undefined ? `Net Value: ${k.portfolio_value.net_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : undefined
+          description: k.portfolio_value.net_value !== undefined ? `Net Value: ${maskPortfolioValue ? '**.***,**' : k.portfolio_value.net_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : undefined
         });
       }
       if (typeof k.net_performance === 'number') {
@@ -361,7 +362,7 @@ const HomePage: React.FC = () => {
       return cards;
     }
     return [];
-  }, [kpis]);
+  }, [kpis, maskPortfolioValue]);
 
   // Allocation view state: 'overall' or 'quoteType'
   const [allocationView, setAllocationView] = useState<'overall' | 'quoteType'>('overall');
@@ -414,11 +415,31 @@ const HomePage: React.FC = () => {
     const all = Object.values(multiTickerPerformance).flat();
     return getMinMaxDates(all);
   }, [multiTickerPerformance]);
+
+  // Compute tickerFiltered with daily pct (day-over-day return) and pct_from_first (cumulative)
   const tickerFiltered = React.useMemo(() => {
-    if (!tickerDateRange) return Object.values(multiTickerPerformance).flat();
-    return Object.values(multiTickerPerformance).flat().filter(d => d.date >= tickerDateRange.start && d.date <= tickerDateRange.end);
+    const flat = Object.values(multiTickerPerformance).flat();
+    if (!tickerDateRange) return flat.map((d, i, arr) => {
+      const prev = i > 0 ? arr[i-1] : undefined;
+      return {
+        ...d,
+        pct: prev && prev.abs_value !== undefined && prev.abs_value !== 0 && d.abs_value !== undefined
+          ? ((d.abs_value - prev.abs_value) / prev.abs_value) * 100
+          : undefined,
+      };
+    });
+    return flat.filter(d => d.date >= tickerDateRange.start && d.date <= tickerDateRange.end).map((d, i, arr) => {
+      const prev = i > 0 ? arr[i-1] : undefined;
+      return {
+        ...d,
+        pct: prev && prev.abs_value !== undefined && prev.abs_value !== 0 && d.abs_value !== undefined
+          ? ((d.abs_value - prev.abs_value) / prev.abs_value) * 100
+          : undefined,
+      };
+    });
   }, [multiTickerPerformance, tickerDateRange]);
-  // Add tickerPctFromFirst calculation
+
+  // Add tickerPctFromFirst calculation (cumulative from first)
   const tickerPctFromFirst = React.useMemo(() => {
     if (!tickerFiltered.length) return [];
     const first = tickerFiltered[0].abs_value ?? 1;
@@ -469,8 +490,8 @@ const HomePage: React.FC = () => {
 
   // --- Loading and Error State ---
   // Use a single loading variable for main dashboard loading
-  const loading = portfolioNamesLoading || kpisLoading;
-  const error = portfolioNamesError || kpisError;
+  const loading = portfolioNamesLoading || kpisLoading || returnsKpisLoading;
+  const error = portfolioNamesError || kpisError || returnsKpisError;
 
   if (loading && !kpis) { // Show main loader only if initial data isn't there yet
     return (
@@ -544,10 +565,18 @@ const HomePage: React.FC = () => {
       {/* Existing dashboard content */}
       <div className="space-y-8 w-full">
         <CollapsibleSection key="kpi" title="Key Portfolio KPIs">
-          <div className="flex flex-row flex-wrap gap-6 justify-center">
-            {(() => { console.log('[DEBUG] Rendering KPI cards:', kpiCards); return null; })()}
+          <div className="flex flex-row flex-wrap gap-6 justify-center items-center">
             {kpiCards.map(kpi => (
-              <KpiCard key={kpi.id} kpi={kpi} />
+              kpi.id === 'portfolio_value' ? (
+                <KpiCard
+                  key={kpi.id}
+                  kpi={kpi}
+                  maskPortfolioValue={maskPortfolioValue}
+                  onToggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
+                />
+              ) : (
+                <KpiCard key={kpi.id} kpi={kpi} />
+              )
             ))}
           </div>
         </CollapsibleSection>
@@ -569,7 +598,7 @@ const HomePage: React.FC = () => {
             </div>
           </CollapsibleSection>
         )}
-        <CollapsibleSection key="allocation" title="Asset Allocation">
+        <CollapsibleSection key="allocation" title="Asset Allocation" defaultOpen={false}>
           {/* Radio button group for allocation view */}
           <div className="flex gap-6 mb-4">
             <label className="flex items-center text-gray-300 text-sm cursor-pointer">
@@ -643,7 +672,7 @@ const HomePage: React.FC = () => {
               </label>
             </div>
             <span className="ml-2 px-3 py-1 rounded-lg bg-indigo-700 text-white text-base font-bold shadow-md border border-indigo-400">
-              {getFinalValue(portfolioFiltered, portfolioValueType)}
+              {getFinalValue(portfolioPerformance, portfolioValueType)}
             </span>
             <div className="flex-1 flex justify-end min-w-[260px]">
               <div className="flex flex-col items-end w-full max-w-xs">
@@ -794,6 +823,7 @@ const HomePage: React.FC = () => {
                         }
                   ))
                 ]}
+                animateTrend // <-- Enable trend animation
               />
             )
           ) : (
@@ -808,48 +838,50 @@ const HomePage: React.FC = () => {
               <PresentationChartLineIcon className="h-7 w-7 mr-2 text-indigo-400" />
               Individual Ticker Performance
             </h2>
-            {assetsForSelector.length > 0 && (
-              <div className="flex-shrink-0 min-w-[250px]">
-                <label htmlFor="tickerSelect" className="block text-sm font-medium text-gray-300 mb-1 md:mb-0 md:mr-2 md:inline">Select Ticker(s):</label>
-                <Listbox value={selectedTickers} onChange={setSelectedTickers} multiple>
-                  <div className="relative mt-1 w-full max-w-xs">
-                    <Listbox.Button className="relative w-full cursor-default rounded-lg bg-gray-700 py-2 pl-3 pr-10 text-left border border-gray-600 text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm min-h-[44px] max-w-xs">
-                      {selectedTickers.length > 1 ? (
-                        <span className="text-indigo-200 font-semibold">{selectedTickers.length} tickers selected</span>
-                      ) : (
-                        <span className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-                          {selectedTickers.length === 0 && <span className="text-gray-400">Choose tickers...</span>}
-                          {selectedTickers.map((symbol) => {
-                            const asset = assetsForSelector.find(a => a.symbol === symbol);
-                            return (
-                              <span key={symbol} className="flex items-center bg-indigo-700 text-white rounded px-2 py-0.5 text-xs font-semibold mr-1 mb-1">
-                                {asset ? `${asset.name} (${asset.symbol})` : symbol}
-                                <span
-                                  role="button"
-                                  tabIndex={0}
-                                  className="ml-1 text-indigo-200 hover:text-white focus:outline-none cursor-pointer"
-                                  onClick={e => {
-                                    e.stopPropagation();
+            <div className="flex-shrink-0 min-w-[250px]">
+              <label htmlFor="tickerSelect" className="block text-sm font-medium text-gray-300 mb-1 md:mb-0 md:mr-2 md:inline">Select Ticker(s):</label>
+              <Listbox value={selectedTickers} onChange={setSelectedTickers} multiple disabled={assetsForSelector.length === 0}>
+                <div className="relative mt-1 w-full max-w-xs">
+                  <Listbox.Button className="relative w-full cursor-default rounded-lg bg-gray-700 py-2 pl-3 pr-10 text-left border border-gray-600 text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm min-h-[44px] max-w-xs disabled:opacity-60 disabled:cursor-not-allowed">
+                    {assetsForSelector.length === 0 ? (
+                      <span className="text-gray-400">No tickers available</span>
+                    ) : selectedTickers.length > 1 ? (
+                      <span className="text-indigo-200 font-semibold">{selectedTickers.length} tickers selected</span>
+                    ) : (
+                      <span className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                        {selectedTickers.length === 0 && <span className="text-gray-400">Choose tickers...</span>}
+                        {selectedTickers.map((symbol) => {
+                          const asset = assetsForSelector.find(a => a.symbol === symbol);
+                          return (
+                            <span key={symbol} className="flex items-center bg-indigo-700 text-white rounded px-2 py-0.5 text-xs font-semibold mr-1 mb-1">
+                              {asset ? `${asset.name} (${asset.symbol})` : symbol}
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="ml-1 text-indigo-200 hover:text-white focus:outline-none cursor-pointer"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setSelectedTickers(selectedTickers.filter(t => t !== symbol));
+                                }}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
                                     setSelectedTickers(selectedTickers.filter(t => t !== symbol));
-                                  }}
-                                  onKeyDown={e => {
-                                    if (e.key === 'Enter' || e.key === ' ') {
-                                      setSelectedTickers(selectedTickers.filter(t => t !== symbol));
-                                    }
-                                  }}
-                                  aria-label={`Remove ${asset ? `${asset.name} (${asset.symbol})` : symbol}`}
-                                >
-                                  <XMarkIcon className="h-3 w-3" />
-                                </span>
+                                  }
+                                }}
+                                aria-label={`Remove ${asset ? `${asset.name} (${asset.symbol})` : symbol}`}
+                              >
+                                <XMarkIcon className="h-3 w-3" />
                               </span>
-                            );
-                          })}
-                        </span>
-                      )}
-                      <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
-                        <ChevronUpDownIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
+                            </span>
+                          );
+                        })}
                       </span>
-                    </Listbox.Button>
+                    )}
+                    <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
+                      <ChevronUpDownIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
+                    </span>
+                  </Listbox.Button>
+                  {assetsForSelector.length > 0 && (
                     <Transition as={Fragment} leave="transition ease-in duration-100" leaveFrom="opacity-100" leaveTo="opacity-0">
                       <Listbox.Options className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md bg-gray-800 py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm border border-gray-700">
                         {assetsForSelector.map((asset) => (
@@ -876,10 +908,10 @@ const HomePage: React.FC = () => {
                         ))}
                       </Listbox.Options>
                     </Transition>
-                  </div>
-                </Listbox>
-              </div>
-            )}
+                  )}
+                </div>
+              </Listbox>
+            </div>
           </div>
           <div className="flex items-center gap-4 mb-4">
             <label className="flex items-center text-gray-300 text-sm cursor-pointer">

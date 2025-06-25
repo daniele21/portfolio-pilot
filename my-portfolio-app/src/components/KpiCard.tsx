@@ -5,9 +5,11 @@ import { TRAFFIC_LIGHT_COLORS, TRAFFIC_LIGHT_TEXT_COLORS } from '../constants';
 interface KpiCardProps {
   kpi: Kpi;
   small?: boolean;
+  maskPortfolioValue?: boolean;
+  onToggleMaskPortfolioValue?: () => void;
 }
 
-const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small }) => {
+const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small, maskPortfolioValue, onToggleMaskPortfolioValue }) => {
   const bgColor = TRAFFIC_LIGHT_COLORS[kpi.status] || TRAFFIC_LIGHT_COLORS[TrafficLightStatus.NEUTRAL];
   const textColor = TRAFFIC_LIGHT_TEXT_COLORS[kpi.status] || TRAFFIC_LIGHT_TEXT_COLORS[TrafficLightStatus.NEUTRAL];
   
@@ -30,19 +32,36 @@ const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small }) => {
                   ${small ? 'p-3 min-h-[100px] w-full h-[110px]' : 'p-6 min-h-[180px]'}
                   ${bgColor}`}>
       <div className="flex items-center justify-between">
-        <h3 className={`font-semibold ${textColor} ${small ? 'text-base' : 'text-xl'}`}>{kpi.name}</h3>
+        <div className="flex items-center gap-2">
+          <h3 className={`font-semibold ${textColor} ${small ? 'text-base' : 'text-xl'}`}>{kpi.name}</h3>
+          {/* Mask toggle button only for portfolio value KPI, next to the title */}
+          {kpi.id === 'portfolio_value' && typeof onToggleMaskPortfolioValue === 'function' && (
+            <button
+              className="ml-1 px-2 py-1 rounded bg-gray-600 text-white text-xs font-semibold hover:bg-gray-500 border border-gray-500"
+              onClick={onToggleMaskPortfolioValue}
+              aria-label={maskPortfolioValue ? 'Show portfolio value' : 'Hide portfolio value'}
+              title={maskPortfolioValue ? 'Show portfolio value' : 'Hide portfolio value'}
+              type="button"
+            >
+              {maskPortfolioValue ? 'Show' : 'Hide'}
+            </button>
+          )}
+        </div>
         {/* Render the icon only if ResolvedIconComponent is a function */}
         {ResolvedIconComponent && typeof ResolvedIconComponent === 'function' ? (
           <ResolvedIconComponent className={`${textColor} opacity-70 ${small ? 'h-5 w-5' : 'h-8 w-8'}`} />
         ) : null}
       </div>
-      <div>
+      <div className="flex items-center gap-2">
         <p className={`font-bold ${textColor} ${small ? 'text-2xl' : 'text-4xl'}`}>
-          {typeof kpi.value === 'number' ? kpi.value.toLocaleString() : kpi.value}
+          {/* Mask value for portfolio_value if maskPortfolioValue is true */}
+          {kpi.id === 'portfolio_value' && maskPortfolioValue
+            ? '**.***,**'
+            : (typeof kpi.value === 'number' ? kpi.value.toLocaleString() : kpi.value)}
           {kpi.unit && <span className={`${small ? 'text-base' : 'text-2xl'} ml-1`}>{kpi.unit}</span>}
         </p>
-        {kpi.target && <p className={`text-sm mt-1 ${textColor} opacity-80`}>Target: {kpi.target}</p>}
       </div>
+      {kpi.target && <p className={`text-sm mt-1 ${textColor} opacity-80`}>Target: {kpi.target}</p>}
       {kpi.description && <p className={`text-xs mt-2 ${textColor} opacity-70`}>{<strong>{kpi.description}</strong>}</p>}
     </div>
   );

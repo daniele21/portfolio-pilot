@@ -98,7 +98,7 @@ const App: React.FC = () => {
     <div className="flex h-screen bg-gray-900 text-gray-100 font-sans">
       <aside className="w-64 bg-gray-800 p-6 space-y-6 border-r border-gray-700 flex flex-col">
         <div>
-          <div className="text-3xl font-bold text-indigo-400 mb-8">PortfolioPilot</div>
+          <div className="text-3xl font-bold text-indigo-400 mb-8">My Financial Investments</div>
           <nav className="space-y-2">
             {navItems.map((item) => (
               <Link
