@@ -1,0 +1,6 @@
+{
+  "name": "PortfolioPilot",
+  "description": "A React web application for personal portfolio analysis, featuring KPI dashboards, asset allocation visualization, and an AI Copilot for financial insights.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
