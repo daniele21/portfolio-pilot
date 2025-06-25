@@ -130,7 +130,7 @@ const HomePage: React.FC = () => {
     if (typeof returnsKpis.yesterday_return === 'number') {
       cards.push({
         id: 'yesterday_return',
-        name: 'Return (Yesterday)',
+        name: 'Return (1 Day)',
         value: returnsKpis.yesterday_return.toFixed(2) + '%',
         unit: '',
         status: returnsKpis.yesterday_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.yesterday_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,

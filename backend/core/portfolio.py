@@ -338,6 +338,7 @@ def compute_returns_since(portfolio_name, start_date):
         return {'portfolio': None, 'tickers': {}}
     start_dt = all_dates[0]
     end_dt = all_dates[-1]
+    print(f"[DEBUG] compute_returns_since: start_dt={start_dt}, end_dt={end_dt}")
     # Portfolio values
     def get_portfolio_value(dt):
         total = 0.0
@@ -351,6 +352,7 @@ def compute_returns_since(portfolio_name, start_date):
         return total
     start_value = get_portfolio_value(start_dt)
     end_value = get_portfolio_value(end_dt)
+    print(f"[DEBUG] compute_returns_since: start_value={start_value}, end_value={end_value}")
     portfolio_return = ((end_value - start_value) / start_value * 100) if start_value else 0.0
     # Per-ticker values
     ticker_returns = {}
@@ -393,7 +395,7 @@ def get_last_day_possible_returns(portfolio_name):
     if df_txs.empty or 'ticker' not in df_txs.columns:
         return {'portfolio': None, 'tickers': {}}
     tickers = df_txs['ticker'].unique()
-    last_dates = []
+    all_dates = set()
     for ticker in tickers:
         hist = get_ticker_history(ticker)
         if not hist:
@@ -408,11 +410,15 @@ def get_last_day_possible_returns(portfolio_name):
         if df_hist.empty or 'date' not in df_hist.columns:
             continue
         df_hist['date'] = pd.to_datetime(df_hist['date'])
-        last_dates.append(df_hist['date'].max())
-    if not last_dates:
+        all_dates.update(df_hist['date'].tolist())
+    if not all_dates:
         return {'portfolio': None, 'tickers': {}}
-    last_day = max(last_dates)
-    return compute_returns_since(portfolio_name, last_day.strftime('%Y-%m-%d'))
+    all_dates_sorted = sorted(all_dates)
+    if len(all_dates_sorted) < 2:
+        return {'portfolio': None, 'tickers': {}}
+    # Use the second-to-last date as the start date
+    start_day = all_dates_sorted[-2]
+    return compute_returns_since(portfolio_name, start_day.strftime('%Y-%m-%d'))
 
 def get_weekly_returns(portfolio_name):
     import pandas as pd

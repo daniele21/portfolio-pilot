@@ -25,7 +25,10 @@ const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small }) => {
   }
 
   return (
-    <div className={`rounded-xl shadow-2xl transition-all duration-300 ease-in-out hover:scale-105 ${bgColor} flex flex-col justify-between ${small ? 'p-3 min-h-[100px] w-[140px] h-[110px]' : 'p-6 min-h-[180px]'}`}>
+    <div className={`rounded-xl shadow-lg transition-transform hover:scale-105
+                  flex flex-col justify-between 
+                  ${small ? 'p-3 min-h-[100px] w-full h-[110px]' : 'p-6 min-h-[180px]'}
+                  ${bgColor}`}>
       <div className="flex items-center justify-between">
         <h3 className={`font-semibold ${textColor} ${small ? 'text-base' : 'text-xl'}`}>{kpi.name}</h3>
         {/* Render the icon only if ResolvedIconComponent is a function */}
@@ -40,7 +43,7 @@ const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small }) => {
         </p>
         {kpi.target && <p className={`text-sm mt-1 ${textColor} opacity-80`}>Target: {kpi.target}</p>}
       </div>
-      {kpi.description && <p className={`text-xs mt-2 ${textColor} opacity-70`}>{kpi.description}</p>}
+      {kpi.description && <p className={`text-xs mt-2 ${textColor} opacity-70`}>{<strong>{kpi.description}</strong>}</p>}
     </div>
   );
 });
