@@ -1,4 +1,4 @@
-import React, { Fragment, useState } from 'react';
+import React, { Fragment } from 'react';
 import KpiCard from '../components/KpiCard';
 import SunburstChart from '../components/SunburstChart';
 import { Kpi, HistoricalDataPoint, TrafficLightStatus } from '../types';
@@ -12,6 +12,8 @@ import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
 import { fetchBenchmarkPerformance } from '../services/marketDataService';
 import { useQuery } from '@tanstack/react-query';
 import GenericPerformanceSection from '../components/PerformanceSection';
+import CollapsibleSection from '../components/CollapsibleComponent';
+import MultiSelectListbox from '../components/MultiSelectListBox';
 
 // Helper to get min/max dates from data
 const getMinMaxDates = (data: HistoricalDataPoint[]) => {
@@ -20,39 +22,17 @@ const getMinMaxDates = (data: HistoricalDataPoint[]) => {
   return {min: dates[0], max: dates[dates.length-1]};
 };
 
-const CollapsibleSection: React.FC<{ title: string; children: React.ReactNode; defaultOpen?: boolean }> = ({ title, children, defaultOpen = true }) => {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="mb-4">
-      <button
-        className="w-full flex items-center justify-between px-4 py-2 bg-gray-700 rounded-t-lg focus:outline-none text-left text-white font-semibold text-lg hover:bg-gray-600 transition-colors"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        aria-controls={`section-${title.replace(/\s+/g, '-')}`}
-      >
-        <span>{title}</span>
-        <span className={`transform transition-transform duration-200 ${open ? '' : 'rotate-180'}`}>▼</span>
-      </button>
-      {open && (
-        <div id={`section-${title.replace(/\s+/g, '-')}`} className="bg-gray-800 rounded-b-lg p-6 border-t border-gray-700">
-          {children}
-        </div>
-      )}
-    </div>
-  );
-};
-
 const HomePage: React.FC = () => {
   const { isLoggedIn, idToken } = useAuth();
-  const [selectedPortfolio, setSelectedPortfolio] = useState<string | null>(null);
-  const [portfolioValueType, setPortfolioValueType] = useState<'value' | 'abs_value' | 'pct' | 'pct_from_first'>('value');
-  const [tickerValueType, setTickerValueType] = useState<'value' | 'abs_value' | 'pct' | 'pct_from_first'>('value');
-  const [portfolioDateRange, setPortfolioDateRange] = useState<{ start: string; end: string } | null>(null);
-  const [tickerDateRange, setTickerDateRange] = useState<{ start: string; end: string } | null>(null);
-  const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
-  const [benchmarkPerformance, setBenchmarkPerformance] = useState<Record<string, HistoricalDataPoint[]>>({});
-  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
-  const [maskPortfolioValue, setMaskPortfolioValue] = useState(true);
+  const [selectedPortfolio, setSelectedPortfolio] = React.useState<string | null>(null);
+  const [portfolioValueType, setPortfolioValueType] = React.useState<'value' | 'abs_value' | 'pct' | 'pct_from_first'>('value');
+  const [tickerValueType, setTickerValueType] = React.useState<'value' | 'abs_value' | 'pct' | 'pct_from_first'>('value');
+  const [portfolioDateRange, setPortfolioDateRange] = React.useState<{ start: string; end: string } | null>(null);
+  const [tickerDateRange, setTickerDateRange] = React.useState<{ start: string; end: string } | null>(null);
+  const [selectedTickers, setSelectedTickers] = React.useState<string[]>([]);
+  const [benchmarkPerformance, setBenchmarkPerformance] = React.useState<Record<string, HistoricalDataPoint[]>>({});
+  const [selectedBenchmarks, setSelectedBenchmarks] = React.useState<string[]>([]);
+  const [maskPortfolioValue, setMaskPortfolioValue] = React.useState(true);
 
   // Fetch all portfolio names
   const {
@@ -331,7 +311,7 @@ const HomePage: React.FC = () => {
   }, [kpis, maskPortfolioValue]);
 
   // Allocation view state: 'overall' or 'quoteType'
-  const [allocationView, setAllocationView] = useState<'overall' | 'quoteType'>('overall');
+  const [allocationView, setAllocationView] = React.useState<'overall' | 'quoteType'>('overall');
 
   // Fetch allocation data from backend API when allocationView or selectedPortfolio changes
   React.useEffect(() => {
@@ -342,8 +322,8 @@ const HomePage: React.FC = () => {
   }, [selectedPortfolio, allocationView]);
 
   // --- Add missing state and memoized values for ticker and allocation data ---
-  const [multiTickerPerformance, setMultiTickerPerformance] = useState<Record<string, HistoricalDataPoint[]>>({});
-  const [allocationData, setAllocationData] = useState<any>(null);
+  const [multiTickerPerformance, setMultiTickerPerformance] = React.useState<Record<string, HistoricalDataPoint[]>>({});
+  const [allocationData, setAllocationData] = React.useState<any>(null);
 
   // For SunburstChart, convert allocationData to assets-like array for compatibility
   const allocationAssets = React.useMemo(() => {
@@ -663,53 +643,15 @@ const HomePage: React.FC = () => {
               return getFinalValue(portfolioFiltered, portfolioValueType);
             })()}
             selector={
-              <Listbox
+              <MultiSelectListbox
+                options={BENCHMARK_TICKERS}
                 value={selectedBenchmarks}
                 onChange={setSelectedBenchmarks}
-                multiple
-              >
-                <div className="relative min-w-[220px]">
-                  <Listbox.Button className="relative w-full cursor-pointer rounded-lg bg-gray-700 py-2 pl-3 pr-10 text-left text-gray-200 shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-opacity-75 text-sm">
-                    <span className="block truncate">
-                      {selectedBenchmarks.length === 0
-                        ? 'Select Benchmarks'
-                        : selectedBenchmarks.map(s => benchmarkNames[s] || s).join(', ')}
-                    </span>
-                    <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
-                      <ChevronUpDownIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
-                    </span>
-                  </Listbox.Button>
-                  <Transition
-                    as={React.Fragment}
-                    leave="transition ease-in duration-100"
-                    leaveFrom="opacity-100"
-                    leaveTo="opacity-0"
-                  >
-                    <Listbox.Options className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md bg-gray-800 py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm">
-                      {BENCHMARK_TICKERS.map(b => (
-                        <Listbox.Option
-                          key={b.symbol}
-                          value={b.symbol}
-                          className={({ active }) =>
-                            `relative cursor-pointer select-none py-2 pl-10 pr-4 ${active ? 'bg-indigo-600 text-white' : 'text-gray-200'}`
-                          }
-                        >
-                          {({ selected }) => (
-                            <>
-                              <span className={`block truncate ${selected ? 'font-medium' : 'font-normal'}`}>{benchmarkNames[b.symbol] || b.name}</span>
-                              {selected ? (
-                                <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-indigo-400">
-                                  <CheckIcon className="h-5 w-5" aria-hidden="true" />
-                                </span>
-                              ) : null}
-                            </>
-                          )}
-                        </Listbox.Option>
-                      ))}
-                    </Listbox.Options>
-                  </Transition>
-                </div>
-              </Listbox>
+                getValue={b => b.symbol}
+                renderLabel={b => benchmarkNames[b.symbol] || b.name}
+                placeholder="Select Benchmarks"
+                maxDisplayCount={3}
+              />
             }
           />
         </CollapsibleSection>
@@ -767,53 +709,15 @@ const HomePage: React.FC = () => {
                   : '-'
             }
             selector={
-              <Listbox
+              <MultiSelectListbox
+                options={assetsForSelector}
                 value={selectedTickers}
                 onChange={setSelectedTickers}
-                multiple
-              >
-                <div className="relative min-w-[220px]">
-                  <Listbox.Button className="relative w-full cursor-pointer rounded-lg bg-gray-700 py-2 pl-3 pr-10 text-left text-gray-200 shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-opacity-75 text-sm">
-                    <span className="block truncate">
-                      {selectedTickers.length === 0
-                        ? 'Select Tickers'
-                        : selectedTickers.join(', ')}
-                    </span>
-                    <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
-                      <ChevronUpDownIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
-                    </span>
-                  </Listbox.Button>
-                  <Transition
-                    as={React.Fragment}
-                    leave="transition ease-in duration-100"
-                    leaveFrom="opacity-100"
-                    leaveTo="opacity-0"
-                  >
-                    <Listbox.Options className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md bg-gray-800 py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm">
-                      {assetsForSelector.map(a => (
-                        <Listbox.Option
-                          key={a.symbol}
-                          value={a.symbol}
-                          className={({ active }) =>
-                            `relative cursor-pointer select-none py-2 pl-10 pr-4 ${active ? 'bg-indigo-600 text-white' : 'text-gray-200'}`
-                          }
-                        >
-                          {({ selected }) => (
-                            <>
-                              <span className={`block truncate ${selected ? 'font-medium' : 'font-normal'}`}>{a.symbol}</span>
-                              {selected ? (
-                                <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-indigo-400">
-                                  <CheckIcon className="h-5 w-5" aria-hidden="true" />
-                                </span>
-                              ) : null}
-                            </>
-                          )}
-                        </Listbox.Option>
-                      ))}
-                    </Listbox.Options>
-                  </Transition>
-                </div>
-              </Listbox>
+                getValue={a => a.symbol}
+                renderLabel={a => `${a.name} (${a.symbol})`}
+                placeholder="Select Tickers"
+                maxDisplayCount={3}
+              />
             }
           />
         </CollapsibleSection>

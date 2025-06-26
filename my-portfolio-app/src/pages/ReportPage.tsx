@@ -6,6 +6,8 @@ import { CheckIcon, ChevronUpDownIcon, XMarkIcon } from '@heroicons/react/20/sol
 import ReactMarkdown from 'react-markdown';
 import { TrafficLight } from '../components/TrafficLight';
 import FinalEvaluationCard from '../components/FinalEvaluationCard';
+import CollapsibleSection from '../components/CollapsibleComponent';
+import MultiSelectListbox from '../components/MultiSelectListBox';
 
 // --- Ticker Overview Table (modern style, no external Card or lucide-react) ---
 function ExpandableCell({ text = "", isExpanded, onToggle }: { text: string; isExpanded: boolean; onToggle: () => void }) {
@@ -221,7 +223,7 @@ const ReportPage: React.FC = () => {
       {error && <div className="text-red-500">{error}</div>}
       {/* Portfolio Report Section (now collapsible) */}
       <div className="bg-white rounded-xl shadow-md p-6 mb-10">
-        <CollapsibleSection section="Portfolio Report" text="" defaultOpen={true}>
+        <CollapsibleSection title="Portfolio Report" defaultOpen={true}>
           {/* Portfolio Overview as prominent introduction (no card UI) */}
           {portfolioReport && portfolioReport.portfolio_report ? (
             <div className="space-y-6">
@@ -347,7 +349,7 @@ const ReportPage: React.FC = () => {
               )}
               {/* Portfolio Report Bullets */}
               <div className="space-y-4 mt-6">
-                <CollapsibleSection section="Portfolio Insights" text="" defaultOpen={true}>
+                <CollapsibleSection title="Portfolio Insights" defaultOpen={true}>
                   <InsightsAccordion data={{
                     main_risks: portfolioReport.portfolio_report.main_risks,
                     key_strengths: portfolioReport.portfolio_report.key_strengths,
@@ -364,7 +366,7 @@ const ReportPage: React.FC = () => {
                     'notable_events',
                     'portfolio_overview',
                   ].includes(section)) return null;
-                  return <CollapsibleSection key={section} section={section} text={typeof text === 'string' ? text : ''} />;
+                  return <CollapsibleSection key={section} title={section} defaultOpen={false}>{typeof text === 'string' ? text : ''}</CollapsibleSection>;
                 })}
               </div>
             </div>
@@ -377,69 +379,14 @@ const ReportPage: React.FC = () => {
       <div className="mb-4 flex items-end gap-2">
         <div className="max-w-xs flex-1">
           <label htmlFor="ticker-select" className="block text-sm font-medium text-gray-700 mb-1">Select Ticker(s):</label>
-          <Listbox value={selectedTickers} onChange={setSelectedTickers} multiple>
-            <div className="relative mt-1 w-full">
-              <Listbox.Button className="relative w-full cursor-default rounded-lg bg-gray-100 py-2 pl-3 pr-10 text-left border border-gray-300 text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm min-h-[44px] max-w-xs">
-                {selectedTickers.length > 1 ? (
-                  <span className="text-indigo-700 font-semibold">{selectedTickers.length} tickers selected</span>
-                ) : (
-                  <span className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-                    {selectedTickers.length === 0 && <span className="text-gray-400">Choose tickers...</span>}
-                    {selectedTickers.map((symbol) => (
-                      <span key={symbol} className="flex items-center bg-indigo-600 text-white rounded px-2 py-0.5 text-xs font-semibold mr-1 mb-1">
-                        {symbol}
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          aria-label={`Remove ${symbol}`}
-                          className="ml-1 text-indigo-200 hover:text-white focus:outline-none cursor-pointer"
-                          onClick={e => {
-                            e.stopPropagation();
-                            setSelectedTickers(selectedTickers.filter(t => t !== symbol));
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              setSelectedTickers(selectedTickers.filter(t => t !== symbol));
-                            }
-                          }}
-                        >
-                          <XMarkIcon className="h-3 w-3" />
-                        </span>
-                      </span>
-                    ))}
-                  </span>
-                )}
-                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
-                  <ChevronUpDownIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
-                </span>
-              </Listbox.Button>
-              <Transition as={Fragment} leave="transition ease-in duration-100" leaveFrom="opacity-100" leaveTo="opacity-0">
-                <Listbox.Options className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm border border-gray-300">
-                  {tickers.map((ticker) => (
-                    <Listbox.Option
-                      key={ticker}
-                      className={({ active }) =>
-                        `relative cursor-pointer select-none py-2 pl-10 pr-4 ${active ? 'bg-indigo-100 text-indigo-900' : 'text-gray-900'}`
-                      }
-                      value={ticker}
-                    >
-                      {({ selected }) => (
-                        <>
-                          <span className={`block truncate ${selected ? 'font-semibold' : 'font-normal'}`}>{ticker}</span>
-                          {selected ? (
-                            <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-indigo-600">
-                              <CheckIcon className="h-5 w-5" aria-hidden="true" />
-                            </span>
-                          ) : null}
-                        </>
-                      )}
-                    </Listbox.Option>
-                  ))}
-                </Listbox.Options>
-              </Transition>
-            </div>
-          </Listbox>
+          <MultiSelectListbox
+            options={tickers.map(symbol => ({ symbol, name: symbol }))}
+            value={selectedTickers}
+            onChange={setSelectedTickers}
+            getValue={a => a.symbol}
+            renderLabel={a => a.symbol}
+            placeholder="Choose tickers..."
+          />
         </div>
         <button
           className="px-3 py-2 rounded bg-indigo-500 text-white font-semibold hover:bg-indigo-400 disabled:opacity-50"
@@ -508,37 +455,6 @@ const ReportPage: React.FC = () => {
     </div>
   );
 };
-
-// CollapsibleSection component (move outside ReportPage)
-function CollapsibleSection({ section, text, children, defaultOpen = false }: { section: string; text: string; children?: React.ReactNode; defaultOpen?: boolean }) {
-  const [open, setOpen] = React.useState(defaultOpen);
-  return (
-    <div>
-      <button
-        type="button"
-        className="flex items-center w-full font-semibold text-indigo-700 mb-1 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        aria-controls={`section-${section}`}
-      >
-        <span className="flex-1 text-left">{section.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
-        <svg
-          className={`w-4 h-4 ml-2 transition-transform ${open ? 'rotate-90' : ''}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-      </button>
-      {open && (
-        <div id={`section-${section}`} className="prose prose-sm max-w-none border-l-2 border-indigo-200 pl-3 mb-2">
-          {children ? children : <ReactMarkdown>{typeof text === 'string' ? text.replace(/^\*\s{2,}/gm, '* ') : ''}</ReactMarkdown>}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // CollapsibleSectionTable component for collapsible tables
 function CollapsibleSectionTable({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
