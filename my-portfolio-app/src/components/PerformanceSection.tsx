@@ -3,6 +3,7 @@ import { Listbox, Transition } from '@headlessui/react';
 import { PresentationChartLineIcon } from '@heroicons/react/24/outline';
 import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
 import PerformanceChart from '../components/PerformanceChart';
+import DateRangePicker from '../components/DateRangePicker';
 import type { HistoricalDataPoint } from '../types';
 
 export type ValueType = 'value' | 'abs_value' | 'pct' | 'pct_from_first';
@@ -101,43 +102,13 @@ const GenericPerformanceSection: React.FC<GenericPerfSectionProps> = ({
       </div>
 
       {/* Date range pickers + YTD */}
-      <div className="flex flex-wrap items-center gap-4 mb-4">
-        <button
-          className="px-4 py-1 rounded bg-indigo-600 text-white font-semibold hover:bg-indigo-500 text-sm"
-          onClick={onSetYTD}
-          disabled={!minDate}
-        >
-          YTD
-        </button>
-        {minDate && maxDate && (
-          <>
-            <label className="text-gray-300 text-sm">From:</label>
-            <input
-              type="date"
-              min={minDate}
-              max={maxDate}
-              value={dateRange?.start || minDate}
-              onChange={e => onDateRangeChange({ start: e.target.value, end: dateRange?.end || maxDate })}
-              className="bg-gray-700 text-gray-100 rounded px-2 py-1 border border-gray-600"
-            />
-            <label className="text-gray-300 text-sm">To:</label>
-            <input
-              type="date"
-              min={minDate}
-              max={maxDate}
-              value={dateRange?.end || maxDate}
-              onChange={e => onDateRangeChange({ start: dateRange?.start || minDate, end: e.target.value })}
-              className="bg-gray-700 text-gray-100 rounded px-2 py-1 border border-gray-600"
-            />
-            <button
-              className="px-2 py-1 rounded bg-gray-600 text-white text-xs ml-2"
-              onClick={() => onDateRangeChange(null)}
-            >
-              Reset
-            </button>
-          </>
-        )}
-      </div>
+      <DateRangePicker
+        minDate={minDate}
+        maxDate={maxDate}
+        value={dateRange}
+        onChange={onDateRangeChange}
+        onSetYtd={onSetYTD}
+      />
 
       {/* Chart or states */}
       {loading ? (

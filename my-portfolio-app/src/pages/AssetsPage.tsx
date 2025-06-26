@@ -263,8 +263,8 @@ const AssetAnalysisPage: React.FC = () => {
 
   // --- YTD Button Handler for Ticker Performance ---
   const setTickerYTD = () => {
-    if (!tickerMinMax.min || !tickerMinMax.max) return;
-    setTickerDateRange({ start: tickerMinMax.min, end: tickerMinMax.max });
+    const yearStart = dayjs().startOf('year').format('YYYY-MM-DD');
+    setTickerDateRange({ start: yearStart, end: tickerMinMax.max });
   };
 
   // Fix GenericPerformanceSection usage: pass a default valueType and onValueTypeChange
