@@ -587,18 +587,59 @@ const HomePage: React.FC = () => {
             title={`Portfolio Performance – ${selectedPortfolio}`}
             valueType={portfolioValueType}
             onValueTypeChange={setPortfolioValueType}
-            data={portfolioFiltered}
+            data={(() => {
+              if (portfolioValueType === 'pct_from_first' && portfolioFiltered.length > 0) {
+                const firstAbs = portfolioFiltered[0].abs_value ?? 1;
+                return portfolioFiltered.map(d => ({
+                  ...d,
+                  pct_from_first:
+                    d.abs_value !== undefined && firstAbs !== 0
+                      ? ((d.abs_value - firstAbs) / firstAbs) * 100
+                      : undefined,
+                }));
+              }
+              return portfolioFiltered;
+            })()}
             series={[
               {
                 id: 'portfolio',
                 name: selectedPortfolio!,
-                data: portfolioFiltered,
+                data: (() => {
+                  if (portfolioValueType === 'pct_from_first' && portfolioFiltered.length > 0) {
+                    const firstAbs = portfolioFiltered[0].abs_value ?? 1;
+                    return portfolioFiltered.map(d => ({
+                      ...d,
+                      pct_from_first:
+                        d.abs_value !== undefined && firstAbs !== 0
+                          ? ((d.abs_value - firstAbs) / firstAbs) * 100
+                          : undefined,
+                    }));
+                  }
+                  return portfolioFiltered;
+                })(),
               },
-              ...selectedBenchmarks.map(symbol => ({
-                id: symbol,
-                name: benchmarkNames[symbol] || symbol,
-                data: benchmarkFiltered[symbol] || [],
-              }))
+              ...selectedBenchmarks.map(symbol => {
+                const data = benchmarkFiltered[symbol] || [];
+                if (portfolioValueType === 'pct_from_first' && data.length > 0) {
+                  const firstAbs = data[0].abs_value ?? 1;
+                  return {
+                    id: symbol,
+                    name: benchmarkNames[symbol] || symbol,
+                    data: data.map(d => ({
+                      ...d,
+                      pct_from_first:
+                        d.abs_value !== undefined && firstAbs !== 0
+                          ? ((d.abs_value - firstAbs) / firstAbs) * 100
+                          : undefined,
+                    })),
+                  };
+                }
+                return {
+                  id: symbol,
+                  name: benchmarkNames[symbol] || symbol,
+                  data,
+                };
+              })
             ]}
             dateRange={portfolioDateRange}
             onDateRangeChange={setPortfolioDateRange}
@@ -607,7 +648,20 @@ const HomePage: React.FC = () => {
             onSetYTD={setPortfolioYTD}
             loading={perfLoading}
             notEnoughDataMessage="Not enough historical data from backend to display portfolio trend."
-            finalValue={getFinalValue(portfolioPerformance, portfolioValueType)}
+            finalValue={(() => {
+              if (portfolioValueType === 'pct_from_first' && portfolioFiltered.length > 0) {
+                const firstAbs = portfolioFiltered[0].abs_value ?? 1;
+                const withPctFromFirst = portfolioFiltered.map(d => ({
+                  ...d,
+                  pct_from_first:
+                    d.abs_value !== undefined && firstAbs !== 0
+                      ? ((d.abs_value - firstAbs) / firstAbs) * 100
+                      : undefined,
+                }));
+                return getFinalValue(withPctFromFirst, portfolioValueType);
+              }
+              return getFinalValue(portfolioFiltered, portfolioValueType);
+            })()}
             selector={
               <Listbox
                 value={selectedBenchmarks}

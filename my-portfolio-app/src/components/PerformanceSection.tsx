@@ -164,13 +164,6 @@ const GenericPerformanceSection: React.FC<GenericPerfSectionProps> = ({
           strokeColor="#4ade80"
         />
       ))}
-
-      {/* Fallback message */}
-      {!loading && !hasMulti && (!data || data.length < 2) && (
-        <div className="mt-6 h-64 bg-gray-750 rounded-lg flex items-center justify-center">
-          <p className="text-gray-400">{notEnoughDataMessage}</p>
-        </div>
-      )}
     </div>
   );
 };
