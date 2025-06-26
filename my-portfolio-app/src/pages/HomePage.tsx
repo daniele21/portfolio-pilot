@@ -183,6 +183,18 @@ const HomePage: React.FC = () => {
         icon: PresentationChartLineIcon
       });
     }
+    // --- Add one year return card if present ---
+    if (typeof returnsKpis.one_year_return === 'number') {
+      cards.push({
+        id: 'one_year_return',
+        name: 'Return (1 Year)',
+        value: returnsKpis.one_year_return.toFixed(2) + '%',
+        unit: '',
+        status: returnsKpis.one_year_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.one_year_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
+        description: 'Portfolio return over the last 12 months',
+        icon: PresentationChartLineIcon
+      });
+    }
     return cards;
   }, [returnsKpis]);
 

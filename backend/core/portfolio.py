@@ -3,17 +3,85 @@ from datetime import datetime
 import pandas as pd
 import sqlite3
 from db.database import (
-    get_transactions,
     aggregate_positions,
     get_ticker_history,
     save_ticker_data,
     DATABASE_NAME
 )
 from services import data_fetcher
+import time
+from threading import Lock
+
+# --- In-memory cache for performance endpoints ---
+_PERFORMANCE_CACHE = {}
+_TICKER_PERFORMANCE_CACHE = {}
+_MULTI_TICKER_PERFORMANCE_CACHE = {}
+_CACHE_TTL = 60  # seconds
+_CACHE_LOCK = Lock()
+
+
+# Helper to clear caches (call after transaction changes)
+def clear_performance_caches(portfolio_name=None, tickers=None):
+    with _CACHE_LOCK:
+        if portfolio_name:
+            _PERFORMANCE_CACHE.pop(portfolio_name, None)
+            _MULTI_TICKER_PERFORMANCE_CACHE.pop(portfolio_name, None)
+            if tickers:
+                for t in tickers:
+                    _TICKER_PERFORMANCE_CACHE.pop((portfolio_name, t), None)
+            else:
+                # Remove all tickers for this portfolio
+                keys_to_remove = [k for k in _TICKER_PERFORMANCE_CACHE if k[0] == portfolio_name]
+                for k in keys_to_remove:
+                    _TICKER_PERFORMANCE_CACHE.pop(k, None)
+        else:
+            _PERFORMANCE_CACHE.clear()
+            _TICKER_PERFORMANCE_CACHE.clear()
+            _MULTI_TICKER_PERFORMANCE_CACHE.clear()
+
+
+# --- Caching wrappers ---
+def get_cached_portfolio_performance(portfolio_name):
+    now = time.time()
+    with _CACHE_LOCK:
+        entry = _PERFORMANCE_CACHE.get(portfolio_name)
+        if entry and now - entry['ts'] < _CACHE_TTL:
+            return entry['data']
+    data = compute_portfolio_performance(portfolio_name, _skip_cache=True)
+    with _CACHE_LOCK:
+        _PERFORMANCE_CACHE[portfolio_name] = {'data': data, 'ts': now}
+    return data
+
+
+def get_cached_ticker_performance(portfolio_name, ticker, start_date=None):
+    now = time.time()
+    key = (portfolio_name, ticker, str(start_date) if start_date else '')
+    with _CACHE_LOCK:
+        entry = _TICKER_PERFORMANCE_CACHE.get(key)
+        if entry and now - entry['ts'] < _CACHE_TTL:
+            return entry['data']
+    data = compute_ticker_performance(portfolio_name, ticker, start_date, _skip_cache=True)
+    with _CACHE_LOCK:
+        _TICKER_PERFORMANCE_CACHE[key] = {'data': data, 'ts': now}
+    return data
+
+
+def get_cached_multi_ticker_performance(portfolio_name, tickers, start_date=None):
+    now = time.time()
+    key = (portfolio_name, tuple(sorted(tickers)), str(start_date) if start_date else '')
+    with _CACHE_LOCK:
+        entry = _MULTI_TICKER_PERFORMANCE_CACHE.get(key)
+        if entry and now - entry['ts'] < _CACHE_TTL:
+            return entry['data']
+    data = compute_multi_ticker_performance(portfolio_name, tickers, start_date, _skip_cache=True)
+    with _CACHE_LOCK:
+        _MULTI_TICKER_PERFORMANCE_CACHE[key] = {'data': data, 'ts': now}
+    return data
 
 
 def get_portfolio_status(portfolio_name):
     """Return current holdings with latest prices using the new normalized ticker tables."""
+    from db.database import get_transactions  # Local import to avoid circular import
     txs = get_transactions(portfolio_name)
     positions = aggregate_positions(txs)
     holdings = []
@@ -44,6 +112,7 @@ def get_portfolio_status(portfolio_name):
 
 def get_performance(portfolio_name):
     """Compute simple performance trend using daily closes."""
+    from db.database import get_transactions  # Local import to avoid circular import
     txs = get_transactions(portfolio_name)
     if not txs:
         return []
@@ -79,7 +148,10 @@ def get_performance(portfolio_name):
     return values
 
 
-def compute_portfolio_performance(portfolio_name):
+def compute_portfolio_performance(portfolio_name, _skip_cache=False):
+    if not _skip_cache:
+        return get_cached_portfolio_performance(portfolio_name)
+    from db.database import get_transactions  # Local import to avoid circular import
     """
     Compute the historical portfolio value over time, using each ticker's historical price and the portfolio's transaction history.
     Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_first: ...}, ...]
@@ -144,15 +216,21 @@ def compute_portfolio_performance(portfolio_name):
     return values
 
 
-def compute_ticker_performance(portfolio_name, ticker):
+def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_cache=False):
+    if not _skip_cache:
+        return get_cached_ticker_performance(portfolio_name, ticker, start_date)
+    from db.database import get_transactions  # Local import to avoid circular import
     """
     Compute the historical value of a single ticker in a portfolio over time, using its transaction history and price history.
-    Returns a list of dicts: [{date: ..., value: ..., pct: ...}, ...]
+    Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_start: ...}, ...]
     'value' is the net value (market value minus cost spent), 'pct' is the performance % relative to the cost spent for that ticker up to that date.
+    'pct_from_start' is the % change from the abs_value at the start_date (or first date if not provided).
+    The first entry in the returned list will always have pct_from_start = 0.
     """
     txs = [t for t in get_transactions(portfolio_name) if t.get('ticker') == ticker]
     if not txs:
         return []
+    import pandas as pd
     df_txs = pd.DataFrame(txs)
     if df_txs.empty or 'date' not in df_txs.columns or 'quantity' not in df_txs.columns or 'price' not in df_txs.columns:
         return []
@@ -172,8 +250,15 @@ def compute_ticker_performance(portfolio_name, ticker):
     df_hist['date'] = pd.to_datetime(df_hist['date'])
     df_hist.set_index('date', inplace=True)
     all_dates = sorted(df_hist.index)
+    # Filter dates if start_date is provided
+    if start_date is not None:
+        start_dt = pd.to_datetime(start_date)
+        all_dates = [d for d in all_dates if d >= start_dt]
+        if not all_dates:
+            return []  # No data on or after start_date
     values = []
-    for date in all_dates:
+    abs_value_at_start = None
+    for idx, date in enumerate(all_dates):
         qty = df_txs[df_txs['date'] <= date]['quantity'].sum() if not df_txs.empty else 0.0
         # Cost basis: sum of all buy transactions up to this date
         cost = df_txs[(df_txs['date'] <= date) & (df_txs['quantity'] > 0)]
@@ -184,8 +269,43 @@ def compute_ticker_performance(portfolio_name, ticker):
         abs_value = qty * (price if price is not None else 0.0)
         net_value = abs_value - cost_sum
         pct = (net_value / cost_sum * 100) if cost_sum else 0.0
-        values.append({'date': date.strftime('%Y-%m-%d'), 'value': net_value, 'abs_value': abs_value, 'pct': pct})
+        # Set abs_value_at_start to the first nonzero abs_value in the filtered range
+        if idx == 0:
+            abs_value_at_start = abs_value
+        # pct_from_start: always 0 for the first entry, else normal calculation (guard for zero)
+        if idx == 0:
+            pct_from_start = 0.0
+        else:
+            if abs_value_at_start:
+                pct_from_start = ((abs_value - abs_value_at_start) / abs_value_at_start * 100)
+            else:
+                pct_from_start = 0.0
+        values.append({'date': date.strftime('%Y-%m-%d'), 'value': net_value, 'abs_value': abs_value, 'pct': pct, 'pct_from_start': pct_from_start})
     return values
+
+
+def compute_multi_ticker_performance(portfolio_name, tickers, start_date=None, _skip_cache=False):
+    if not _skip_cache:
+        return get_cached_multi_ticker_performance(portfolio_name, tickers, start_date)
+    """
+    Compute the performance for multiple tickers in a portfolio in one call.
+    Returns a dict: { ticker: [performance_data, ...], ... }
+    Ensures that each ticker's performance is only computed once per call, and that start_date is passed correctly.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    results = {}
+    if not tickers:
+        return results
+    # Ensure tickers is a list of unique strings (avoid duplicate calls)
+    tickers = list(dict.fromkeys([str(t).upper() for t in tickers if t]))
+    def perf_for_ticker(ticker):
+        return ticker, compute_ticker_performance(portfolio_name, ticker, start_date=start_date)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_ticker = {executor.submit(perf_for_ticker, ticker): ticker for ticker in tickers}
+        for future in as_completed(future_to_ticker):
+            ticker, perf = future.result()
+            results[ticker] = perf
+    return results
 
 
 def compute_benchmark_performance(ticker):
@@ -228,6 +348,7 @@ def get_overall_asset_allocation(portfolio_name):
     """
     Returns a list of dicts: [{ticker, value, quantity, name, allocation_pct} ...] for all tickers in the portfolio, with their current value, quantity, and allocation as a percentage of total portfolio value.
     """
+    from db.database import get_transactions  # Local import to avoid circular import
     txs = get_transactions(portfolio_name)
     positions = aggregate_positions(txs)
     allocation = []
@@ -265,6 +386,7 @@ def get_asset_allocation_by_quote_type(portfolio_name):
     Returns a dict: {quoteType: allocation_percentage, ...} for all tickers in the portfolio, using quoteType from ticker_info.
     The allocation is the percentage of each quoteType's value over the total portfolio value.
     """
+    from db.database import get_transactions  # Local import to avoid circular import
     txs = get_transactions(portfolio_name)
     positions = aggregate_positions(txs)
     allocation = {}
@@ -301,6 +423,7 @@ def compute_returns_since(portfolio_name, start_date):
         'tickers': { ticker: { 'start_value': ..., 'end_value': ..., 'return_pct': ... }, ... }
     }
     """
+    from db.database import get_transactions  # Local import to avoid circular import
     import pandas as pd
     txs = get_transactions(portfolio_name)
     if not txs:
@@ -338,7 +461,6 @@ def compute_returns_since(portfolio_name, start_date):
         return {'portfolio': None, 'tickers': {}}
     start_dt = all_dates[0]
     end_dt = all_dates[-1]
-    # print(f"[DEBUG] compute_returns_since: start_dt={start_dt}, end_dt={end_dt}")
     # Portfolio values
     def get_portfolio_value(dt):
         total = 0.0
@@ -352,7 +474,6 @@ def compute_returns_since(portfolio_name, start_date):
         return total
     start_value = get_portfolio_value(start_dt)
     end_value = get_portfolio_value(end_dt)
-    # print(f"[DEBUG] compute_returns_since: start_value={start_value}, end_value={end_value}")
     portfolio_return = ((end_value - start_value) / start_value * 100) if start_value else 0.0
     # Per-ticker values
     ticker_returns = {}
@@ -387,6 +508,7 @@ def compute_returns_since(portfolio_name, start_date):
 
 # Helper functions for common periods
 def get_last_day_possible_returns(portfolio_name):
+    from db.database import get_transactions  # Local import to avoid circular import
     import pandas as pd
     txs = get_transactions(portfolio_name)
     if not txs:
@@ -444,7 +566,21 @@ def get_ytd_returns(portfolio_name):
     ytd = pd.Timestamp(year=today.year, month=1, day=1)
     return compute_returns_since(portfolio_name, ytd.strftime('%Y-%m-%d'))
 
+def get_one_year_return(portfolio_name):
+    """
+    Compute the portfolio and per-ticker returns for the last 365 days.
+    Returns a dict:
+    {
+        'portfolio': { 'start_value': ..., 'end_value': ..., 'return_pct': ... },
+        'tickers': { ticker: { 'start_value': ..., 'end_value': ..., 'return_pct': ... }, ... }
+    }
+    """
+    today = pd.Timestamp.today().normalize()
+    one_year_ago = today - pd.Timedelta(days=365)
+    return compute_returns_since(portfolio_name, one_year_ago.strftime('%Y-%m-%d'))
+
 def get_ticker_returns_since(portfolio_name, ticker, start_date):
+    from db.database import get_transactions  # Local import to avoid circular import
     import pandas as pd
     txs = [t for t in get_transactions(portfolio_name) if t.get('ticker') == ticker]
     if not txs:

@@ -45,6 +45,7 @@ Some endpoints require a Google OAuth2 Bearer token in the `Authorization` heade
 | GET    | `/api/portfolio/<portfolio_name>/status/live`                | Path: `portfolio_name` <br> Header: Authorization | Compute & return live status. |
 | GET    | `/api/portfolio/<portfolio_name>/status`                     | Path: `portfolio_name` <br> Header: Authorization | Get saved status (flattened). |
 | GET    | `/api/portfolio/<portfolio_name>/transactions`               | Path: `portfolio_name` | Get all transactions for a portfolio. |
+| GET    | `/api/portfolio/<portfolio_name>/tickers`                    | Path: `portfolio_name` | Get all distinct tickers for a portfolio. |
 | DELETE | `/api/portfolio/<portfolio_name>/transaction/<transaction_id>` | Path: `portfolio_name`, `transaction_id` <br> Header: Authorization | Delete a transaction. |
 | GET    | `/api/portfolio/<portfolio_name>/performance`                | Path: `portfolio_name` | Get historical portfolio performance. |
 | GET    | `/api/portfolio/<portfolio_name>/allocation`                 | Path: `portfolio_name` <br> Query: `grouping` (overall/quoteType) <br> Header: Authorization | Get asset allocation data. |
@@ -69,7 +70,7 @@ Some endpoints require a Google OAuth2 Bearer token in the `Authorization` heade
 | POST   | `/api/portfolio/<portfolio_name>/tickers/performance`         | Path: `portfolio_name` <br> Body: `{ tickers: [str], start_date? }` <br> Header: Authorization | Get historical value for multiple tickers. |
 | GET    | `/api/portfolio/<portfolio_name>/kpis`                        | Path: `portfolio_name` | Get portfolio KPIs (value, best/worst ticker, etc). |
 | GET    | `/api/portfolio/<portfolio_name>/returns`                     | Path: `portfolio_name` <br> Header: Authorization | Get yesterday, weekly, monthly, 3mo, YTD returns. |
-| GET    | `/api/portfolio/<portfolio_name>/kpis/returns`                | Path: `portfolio_name` <br> Header: Authorization | Get return KPIs for dashboard cards. |
+| GET    | `/api/portfolio/<portfolio_name>/kpis/returns`                | Path: `portfolio_name` <br> Header: Authorization | Get return KPIs for dashboard cards. Now includes 1-year return as `one_year_return` and per-ticker 1-year returns as `one_year_ticker_returns`. |
 
 ---
 

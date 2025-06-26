@@ -455,6 +455,9 @@ def save_transactions(portfolio, transactions, max_retries=5, base_delay=0.2):
                 save_ticker_data(ticker, data, max_retries=max_retries, base_delay=base_delay)
         except Exception as e:
             print(f"[save_transactions] Failed to fetch/store ticker data for {ticker}: {e}")
+    # Invalidate performance cache for this portfolio
+    from core.portfolio import clear_performance_caches
+    clear_performance_caches(portfolio)
     return inserted
 
 
@@ -606,6 +609,9 @@ def delete_portfolio(portfolio_name):
     cursor.execute("DELETE FROM portfolios WHERE name = ?", (portfolio_name,))
     conn.commit()
     conn.close()
+    # Invalidate performance cache for this portfolio
+    from core.portfolio import clear_performance_caches
+    clear_performance_caches(portfolio_name)
 
 
 def delete_transaction(portfolio_name, transaction_id):
@@ -615,6 +621,9 @@ def delete_transaction(portfolio_name, transaction_id):
     cursor.execute("DELETE FROM transactions WHERE id = ? AND portfolio = ?", (transaction_id, portfolio_name))
     conn.commit()
     conn.close()
+    # Invalidate performance cache for this portfolio
+    from core.portfolio import clear_performance_caches
+    clear_performance_caches(portfolio_name)
 
 
 def get_all_portfolio_names():

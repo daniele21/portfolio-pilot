@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from db.database import init_db, sqlite3, save_ticker_data, get_transactions, save_transactions, delete_portfolio, delete_transaction, get_all_portfolio_names, save_portfolio_status, get_portfolio_status_saved
 from db.database import DATABASE_NAME
 from core.portfolio import (
+    compute_multi_ticker_performance,
     compute_portfolio_performance,
     get_portfolio_status,
     get_asset_allocation_by_quote_type,
@@ -23,7 +24,11 @@ from core.portfolio import (
     get_ticker_weekly_returns,
     get_ticker_monthly_returns,
     get_ticker_three_month_returns,
-    get_ticker_ytd_returns
+    get_ticker_ytd_returns,
+    get_cached_portfolio_performance,
+    get_cached_ticker_performance,
+    get_cached_multi_ticker_performance,
+    get_one_year_return,
 )
 from core.report_generator import generate_portfolio_report_with_gemini, generate_multi_ticker_report_with_gemini, generate_ticker_report_with_gemini
 from services.data_fetcher import fetch_with_cache
@@ -268,8 +273,7 @@ def standardize_and_save():
         return data
     raw = data.get('raw')
     portfolio_name = data.get('portfolio_name')
-    if not raw:
-        return jsonify({'error': 'No raw text provided'}), 400
+   
     try:
         transactions = parse_transactions(raw, portfolio_name)
     except Exception as e:
@@ -282,7 +286,7 @@ def standardize_and_save():
 
 @app.route('/api/portfolio/<string:portfolio_name>/performance', methods=['GET'])
 def portfolio_performance(portfolio_name):
-    perf = compute_portfolio_performance(portfolio_name)
+    perf = get_cached_portfolio_performance(portfolio_name)
     return jsonify(perf)
 
 
@@ -485,8 +489,8 @@ def handle_404(e):
 
 @app.route('/api/portfolio/<string:portfolio_name>/ticker/<string:ticker>/performance', methods=['GET'])
 def ticker_performance_api(portfolio_name, ticker):
-    """API endpoint to get the historical value of a single ticker in a portfolio."""
-    perf = compute_ticker_performance(portfolio_name, ticker)
+    start_date = request.args.get('start_date')
+    perf = get_cached_ticker_performance(portfolio_name, ticker, start_date=start_date)
     return jsonify(perf)
 
 
@@ -511,7 +515,7 @@ def get_portfolio_kpis_api(portfolio_name):
       - highest_value_ticker: {symbol, abs_value}
       - worst_ticker: {symbol, pct}
     """
-    perf = compute_portfolio_performance(portfolio_name)
+    perf = get_cached_portfolio_performance(portfolio_name)
     tickers = set()
     for t in get_transactions(portfolio_name):
         if t.get('ticker'):
@@ -529,9 +533,9 @@ def get_portfolio_kpis_api(portfolio_name):
     highest_value_ticker = None
     highest_value = float('-inf')
     ticker_perf_results = {}
-    # Parallelize compute_ticker_performance calls
+    # Parallelize get_cached_ticker_performance calls
     with ThreadPoolExecutor(max_workers=8) as executor:
-        future_to_ticker = {executor.submit(compute_ticker_performance, portfolio_name, ticker): ticker for ticker in tickers}
+        future_to_ticker = {executor.submit(get_cached_ticker_performance, portfolio_name, ticker): ticker for ticker in tickers}
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
@@ -583,12 +587,15 @@ def get_portfolio_allocation_api(portfolio_name):
 @require_google_token
 def get_portfolio_returns_api(portfolio_name):
     """
-    API endpoint to get yesterday, weekly, and monthly returns for the portfolio and each ticker.
+    API endpoint to get yesterday, weekly, monthly, 3mo, YTD, and 1yr returns for the portfolio and each ticker.
     Returns a dict:
     {
         'yesterday': { 'portfolio': ..., 'tickers': ... },
         'weekly': { ... },
-        'monthly': { ... }
+        'monthly': { ... },
+        'three_month': { ... },
+        'ytd': { ... },
+        'one_year': { ... }
     }
     """
     y = get_last_day_possible_returns(portfolio_name)
@@ -596,12 +603,14 @@ def get_portfolio_returns_api(portfolio_name):
     m = get_monthly_returns(portfolio_name)
     three_month = get_three_month_returns(portfolio_name)
     ytd = get_ytd_returns(portfolio_name)
+    one_year = get_one_year_return(portfolio_name)
     return jsonify({
         'yesterday': y,
         'weekly': w,
         'monthly': m,
         'three_month': three_month,
-        'ytd': ytd
+        'ytd': ytd,
+        'one_year': one_year
     })
 
 
@@ -614,12 +623,16 @@ def get_portfolio_return_kpis_api(portfolio_name):
       - yesterday_return: {portfolio, tickers}
       - weekly_return: {portfolio, tickers}
       - monthly_return: {portfolio, tickers}
+      - three_month_return: {portfolio, tickers}
+      - ytd_return: {portfolio, tickers}
+      - one_year_return: {portfolio, tickers}
     """
     y = get_last_day_possible_returns(portfolio_name)
     w = get_weekly_returns(portfolio_name)
     m = get_monthly_returns(portfolio_name)
     three_month = get_three_month_returns(portfolio_name)
     ytd = get_ytd_returns(portfolio_name)
+    one_year = get_one_year_return(portfolio_name)
     # For KPI cards, just return the portfolio return_pct for each period
     return jsonify({
         'yesterday_return': y['portfolio']['return_pct'] if y['portfolio'] else None,
@@ -627,11 +640,13 @@ def get_portfolio_return_kpis_api(portfolio_name):
         'monthly_return': m['portfolio']['return_pct'] if m['portfolio'] else None,
         'three_month_return': three_month['portfolio']['return_pct'] if three_month['portfolio'] else None,
         'ytd_return': ytd['portfolio']['return_pct'] if ytd['portfolio'] else None,
+        'one_year_return': one_year['portfolio']['return_pct'] if one_year and one_year.get('portfolio') else None,
         'yesterday_ticker_returns': y['tickers'],
         'weekly_ticker_returns': w['tickers'],
         'monthly_ticker_returns': m['tickers'],
         'three_month_ticker_returns': three_month['tickers'],
-        'ytd_ticker_returns': ytd['tickers']
+        'ytd_ticker_returns': ytd['tickers'],
+        'one_year_ticker_returns': one_year['tickers'] if one_year and one_year.get('tickers') else None
     })
 
 
@@ -797,6 +812,44 @@ def generate_ticker_report_api(portfolio_name, ticker):
         force
     )
     return jsonify({'ticker': ticker, 'report': report, 'cost': cost})
+
+
+@app.route('/api/portfolio/<string:portfolio_name>/tickers/performance', methods=['POST'])
+@require_google_token
+def multi_ticker_performance_api(portfolio_name):
+    """
+    API endpoint to get the historical value of multiple tickers in a portfolio in one call.
+    Expects JSON body: { "tickers": ["AAPL", "MSFT", ...], "start_date": "YYYY-MM-DD" (optional) }
+    Returns: { ticker: [performance_data, ...], ... }
+    """
+    data = safe_get_json()
+    if isinstance(data, tuple):  # error response from safe_get_json
+        return data
+    tickers = data.get('tickers', [])
+    start_date = data.get('start_date')
+    if not tickers or not isinstance(tickers, list):
+        return jsonify({'error': 'tickers (list) is required'}), 400
+    perf = get_cached_multi_ticker_performance(portfolio_name, tickers, start_date=start_date)
+    return jsonify(perf)
+
+
+@app.route('/api/portfolio/<string:portfolio_name>/tickers', methods=['GET'])
+def get_portfolio_tickers_api(portfolio_name):
+    """
+    API endpoint to get all distinct tickers for a given portfolio.
+    Returns a JSON list of tickers.
+    """
+    try:
+        from db.database import sqlite3, DATABASE_NAME
+        conn = sqlite3.connect(DATABASE_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT DISTINCT ticker FROM transactions WHERE portfolio = ?', (portfolio_name,))
+        rows = cursor.fetchall()
+        conn.close()
+        tickers = [row[0] for row in rows if row[0]]
+        return jsonify({'tickers': tickers})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
