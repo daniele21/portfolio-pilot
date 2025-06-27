@@ -29,15 +29,31 @@ const TickerReturnsTable: React.FC<TickerReturnsTableProps> = ({ portfolio, idTo
       }
       const json = await res.json();
       const periods = ['yesterday', 'weekly', 'monthly', 'three_month', 'ytd', 'one_year'];
-      const tickersSet = new Set<string>();
-      periods.forEach(p => Object.keys(json[p]?.tickers || {}).forEach(t => tickersSet.add(t)));
-      return Array.from(tickersSet).map(symbol => {
-        const row: any = { symbol };
-        periods.forEach(p => {
-          row[`${p}_return`] = json[p]?.tickers?.[symbol]?.return_pct ?? 0;
+      // Try to infer the ticker symbol from the backend response structure
+      // If the ticker name is the same as the symbol, just use it; otherwise, try to extract from a known field or fallback
+      // The backend now returns: ticker_returns[ticker] = { 'ticker_name': ..., ... }
+      // So we want: symbol = ticker (key), name = ticker_name (value.ticker_name)
+      // We'll use the first period that has this ticker, and always use the key as symbol
+      const tickerRows: ReturnMetrics[] = [];
+      periods.forEach(p => {
+        const tickersObj = json[p]?.tickers || {};
+        Object.entries(tickersObj).forEach(([symbol, val]) => {
+          // Only add if not already present (by symbol)
+          if (!tickerRows.some(row => row.symbol === symbol)) {
+            // Defensive: val may be any, so use optional chaining and fallback
+            const name = (val && typeof (val as any)["ticker_name"] === 'string' && (val as any)["ticker_name"].trim() !== '') ? (val as any)["ticker_name"] : symbol;
+            tickerRows.push({
+              name,
+              symbol,
+              ...periods.reduce((acc, period) => {
+                acc[`${period}_return`] = json[period]?.tickers?.[symbol]?.return_pct ?? 0;
+                return acc;
+              }, {} as any)
+            } as ReturnMetrics);
+          }
         });
-        return row as ReturnMetrics;
       });
+      return tickerRows;
     },
     enabled: !!portfolio
   });
@@ -54,6 +70,7 @@ const TickerReturnsTable: React.FC<TickerReturnsTableProps> = ({ portfolio, idTo
   }, [returnsData, sortKey, asc]);
 
   const headers: { key: keyof ReturnMetrics; label: string }[] = [
+    { key: 'name', label: 'Asset' },
     { key: 'symbol', label: 'Ticker' },
     { key: 'yesterday_return', label: '1D' },
     { key: 'weekly_return', label: '1W' },
@@ -101,8 +118,9 @@ const TickerReturnsTable: React.FC<TickerReturnsTableProps> = ({ portfolio, idTo
             <tbody className="divide-y divide-gray-700">
               {sorted.map(row => (
                 <tr key={row.symbol} className="hover:bg-gray-700 transition-colors">
-                  <td className="px-4 py-3 font-medium text-white">{row.symbol}</td>
-                  {headers.slice(1).map(h => {
+                  <td className="px-4 py-3 font-medium text-white">{row.name}</td>
+                  <td className="px-4 py-3 font-mono text-gray-200">{row.symbol}</td>
+                  {headers.slice(2).map(h => {
                     const raw = row[h.key] as number;
                     const formatted = raw.toFixed(2) + '%';
                     const colorClass = raw > 0 ? 'text-green-400' : raw < 0 ? 'text-red-400' : 'text-gray-300';

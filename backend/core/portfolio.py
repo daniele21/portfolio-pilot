@@ -492,7 +492,17 @@ def compute_returns_since(portfolio_name, start_date):
         start_val = qty_start * (price_start if price_start is not None else 0.0)
         end_val = qty_end * (price_end if price_end is not None else 0.0)
         ticker_return = ((end_val - start_val) / start_val * 100) if start_val else 0.0
+        # Get ticker name from ticker_info
+        import sqlite3
+        conn = sqlite3.connect(DATABASE_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT shortName, ticker FROM ticker_info WHERE ticker = ?', (ticker,))
+        row = cursor.fetchone()
+        ticker_name = row[0] if row and row[0] else ticker
+        ticker = row[1] if row and row[1] else ticker
+        conn.close()
         ticker_returns[ticker] = {
+            'ticker_name': ticker_name,
             'start_value': start_val,
             'end_value': end_val,
             'return_pct': ticker_return
