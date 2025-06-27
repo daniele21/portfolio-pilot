@@ -28,7 +28,7 @@ const TickerReturnsTable: React.FC<TickerReturnsTableProps> = ({ portfolio, idTo
         throw new Error(`HTTP ${res.status}: ${text}`);
       }
       const json = await res.json();
-      const periods = ['yesterday', 'weekly', 'monthly', 'three_month', 'ytd', 'one_year'];
+      const periods = ['yesterday', 'three_days', 'weekly', 'monthly', 'three_month', 'ytd', 'one_year'];
       // Try to infer the ticker symbol from the backend response structure
       // If the ticker name is the same as the symbol, just use it; otherwise, try to extract from a known field or fallback
       // The backend now returns: ticker_returns[ticker] = { 'ticker_name': ..., ... }
@@ -73,6 +73,7 @@ const TickerReturnsTable: React.FC<TickerReturnsTableProps> = ({ portfolio, idTo
     { key: 'name', label: 'Asset' },
     { key: 'symbol', label: 'Ticker' },
     { key: 'yesterday_return', label: '1D' },
+    { key: 'three_days_return', label: '3D' },
     { key: 'weekly_return', label: '1W' },
     { key: 'monthly_return', label: '1M' },
     { key: 'three_month_return', label: '3M' },

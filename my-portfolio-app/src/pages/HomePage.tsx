@@ -102,6 +102,18 @@ const HomePage: React.FC = () => {
         icon: PresentationChartLineIcon
       });
     }
+    // --- Add three-day return card if present ---
+    if (typeof returnsKpis.three_days_return === 'number') {
+      cards.push({
+        id: 'three_days_return',
+        name: 'Return (3 Days)',
+        value: returnsKpis.three_days_return.toFixed(2) + '%',
+        unit: '',
+        status: returnsKpis.three_days_return > 0 ? TrafficLightStatus.GREEN : returnsKpis.three_days_return < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
+        description: 'Portfolio return over the last 3 days',
+        icon: PresentationChartLineIcon
+      });
+    }
     if (typeof returnsKpis.weekly_return === 'number') {
       cards.push({
         id: 'weekly_return',

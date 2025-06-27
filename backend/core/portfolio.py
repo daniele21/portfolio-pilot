@@ -677,3 +677,28 @@ def get_ticker_ytd_returns(portfolio_name, ticker):
     ytd = pd.Timestamp(year=today.year, month=1, day=1)
     return get_ticker_returns_since(portfolio_name, ticker, ytd.strftime('%Y-%m-%d'))
 
+def get_last_three_days_returns(portfolio_name):
+    """
+    Compute the portfolio and per-ticker returns for the last three days (i.e., from three days ago to today).
+    Returns a dict:
+    {
+        'portfolio': { 'start_value': ..., 'end_value': ..., 'return_pct': ... },
+        'tickers': { ticker: { 'ticker_name': ..., 'start_value': ..., 'end_value': ..., 'return_pct': ... }, ... }
+    }
+    """
+    import pandas as pd
+    today = pd.Timestamp.today().normalize()
+    three_days_ago = today - pd.Timedelta(days=3)
+    return compute_returns_since(portfolio_name, three_days_ago.strftime('%Y-%m-%d'))
+
+def get_ticker_three_days_returns(portfolio_name, ticker):
+    """
+    Compute the returns for a single ticker in the portfolio for the last three days (from three days ago to today).
+    Returns a dict:
+        { 'start_value': ..., 'end_value': ..., 'return_pct': ... }
+    """
+    import pandas as pd
+    today = pd.Timestamp.today().normalize()
+    three_days_ago = today - pd.Timedelta(days=3)
+    return get_ticker_returns_since(portfolio_name, ticker, three_days_ago.strftime('%Y-%m-%d'))
+

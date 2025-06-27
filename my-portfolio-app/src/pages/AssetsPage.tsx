@@ -15,6 +15,7 @@ import type { HistoricalDataPoint } from '../types';
 export interface ReturnMetrics {
   symbol: string;
   yesterday_return?: number;
+  three_days_return?: number;
   weekly_return?: number;
   monthly_return?: number;
   three_month_return?: number;

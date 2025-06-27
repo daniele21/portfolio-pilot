@@ -29,6 +29,7 @@ from core.portfolio import (
     get_cached_ticker_performance,
     get_cached_multi_ticker_performance,
     get_one_year_return,
+    get_last_three_days_returns,
 )
 from core.report_generator import generate_portfolio_report_with_gemini, generate_multi_ticker_report_with_gemini, generate_ticker_report_with_gemini
 from services.data_fetcher import fetch_with_cache
@@ -587,10 +588,11 @@ def get_portfolio_allocation_api(portfolio_name):
 @require_google_token
 def get_portfolio_returns_api(portfolio_name):
     """
-    API endpoint to get yesterday, weekly, monthly, 3mo, YTD, and 1yr returns for the portfolio and each ticker.
+    API endpoint to get yesterday, 3days, weekly, monthly, 3mo, YTD, and 1yr returns for the portfolio and each ticker.
     Returns a dict:
     {
         'yesterday': { 'portfolio': ..., 'tickers': ... },
+        'three_days': { ... },
         'weekly': { ... },
         'monthly': { ... },
         'three_month': { ... },
@@ -599,6 +601,7 @@ def get_portfolio_returns_api(portfolio_name):
     }
     """
     y = get_last_day_possible_returns(portfolio_name)
+    three_days = get_last_three_days_returns(portfolio_name)
     w = get_weekly_returns(portfolio_name)
     m = get_monthly_returns(portfolio_name)
     three_month = get_three_month_returns(portfolio_name)
@@ -606,6 +609,7 @@ def get_portfolio_returns_api(portfolio_name):
     one_year = get_one_year_return(portfolio_name)
     return jsonify({
         'yesterday': y,
+        'three_days': three_days,
         'weekly': w,
         'monthly': m,
         'three_month': three_month,
@@ -618,9 +622,10 @@ def get_portfolio_returns_api(portfolio_name):
 @require_google_token
 def get_portfolio_return_kpis_api(portfolio_name):
     """
-    API endpoint to get return KPIs for the portfolio dashboard cards (yesterday, weekly, monthly returns).
+    API endpoint to get return KPIs for the portfolio dashboard cards (yesterday, 3days, weekly, monthly returns).
     Returns a dict with:
       - yesterday_return: {portfolio, tickers}
+      - three_days_return: {portfolio, tickers}
       - weekly_return: {portfolio, tickers}
       - monthly_return: {portfolio, tickers}
       - three_month_return: {portfolio, tickers}
@@ -628,6 +633,7 @@ def get_portfolio_return_kpis_api(portfolio_name):
       - one_year_return: {portfolio, tickers}
     """
     y = get_last_day_possible_returns(portfolio_name)
+    three_days = get_last_three_days_returns(portfolio_name)
     w = get_weekly_returns(portfolio_name)
     m = get_monthly_returns(portfolio_name)
     three_month = get_three_month_returns(portfolio_name)
@@ -636,19 +642,20 @@ def get_portfolio_return_kpis_api(portfolio_name):
     # For KPI cards, just return the portfolio return_pct for each period
     return jsonify({
         'yesterday_return': y['portfolio']['return_pct'] if y['portfolio'] else None,
+        'three_days_return': three_days['portfolio']['return_pct'] if three_days['portfolio'] else None,
         'weekly_return': w['portfolio']['return_pct'] if w['portfolio'] else None,
         'monthly_return': m['portfolio']['return_pct'] if m['portfolio'] else None,
         'three_month_return': three_month['portfolio']['return_pct'] if three_month['portfolio'] else None,
         'ytd_return': ytd['portfolio']['return_pct'] if ytd['portfolio'] else None,
         'one_year_return': one_year['portfolio']['return_pct'] if one_year and one_year.get('portfolio') else None,
         'yesterday_ticker_returns': y['tickers'],
+        'three_days_ticker_returns': three_days['tickers'],
         'weekly_ticker_returns': w['tickers'],
         'monthly_ticker_returns': m['tickers'],
         'three_month_ticker_returns': three_month['tickers'],
         'ytd_ticker_returns': ytd['tickers'],
         'one_year_ticker_returns': one_year['tickers'] if one_year and one_year.get('tickers') else None
     })
-
 
 
 @app.route('/api/portfolio/<string:portfolio_name>/report', methods=['GET', 'POST'])
