@@ -14,6 +14,7 @@ export interface Kpi {
   target?: string | number;
   description?: string;
   icon?: React.ElementType;
+  color?: string; // Optional color override for KPI card (e.g., 'green', 'red')
 }
 
 export interface HistoricalDataPoint {

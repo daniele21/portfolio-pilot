@@ -14,6 +14,7 @@ import { useQuery } from '@tanstack/react-query';
 import GenericPerformanceSection from '../components/PerformanceSection';
 import CollapsibleSection from '../components/CollapsibleComponent';
 import MultiSelectListbox from '../components/MultiSelectListBox';
+import KeyPortfolioKpis from '../components/KeyPortfolioKpis';
 
 // Helper to get min/max dates from data
 const getMinMaxDates = (data: HistoricalDataPoint[]) => {
@@ -289,18 +290,19 @@ const HomePage: React.FC = () => {
       if (k.best_ticker) {
         cards.push({
           id: 'best_ticker',
-          name: 'Best Ticker',
-          value: k.best_ticker.symbol,
+          name: 'Best Asset',
+          value: k.best_ticker.ticker_name || k.best_ticker.symbol,
           unit: '',
           status: TrafficLightStatus.NEUTRAL,
-          description: `Best performance: ${(k.best_ticker.pct ?? 0).toFixed(2)}%`
+          description: `Best performance: ${(k.best_ticker.pct ?? 0).toFixed(2)}%`,
+          color: 'green'
         });
       }
       if (k.highest_value_ticker) {
         cards.push({
           id: 'highest_value_ticker',
-          name: 'Highest Value Ticker',
-          value: k.highest_value_ticker.symbol,
+          name: 'Highest Value Asset',
+          value: k.highest_value_ticker.ticker_name || k.highest_value_ticker.symbol,
           unit: '',
           status: TrafficLightStatus.NEUTRAL,
           description: `Highest value: ${k.highest_value_ticker.abs_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
@@ -309,11 +311,12 @@ const HomePage: React.FC = () => {
       if (k.worst_ticker) {
         cards.push({
           id: 'worst_ticker',
-          name: 'Worst Ticker',
-          value: k.worst_ticker.symbol,
+          name: 'Worst Asset',
+          value: k.worst_ticker.ticker_name || k.worst_ticker.symbol,
           unit: '',
           status: TrafficLightStatus.NEUTRAL,
-          description: `Worst performance: ${(k.worst_ticker.pct ?? 0).toFixed(2)}%`
+          description: `Worst performance: ${(k.worst_ticker.pct ?? 0).toFixed(2)}%`,
+          color: 'red'
         });
       }
       console.log('[DEBUG] kpiCards array after mapping:', cards);
@@ -512,22 +515,12 @@ const HomePage: React.FC = () => {
       </div>
       {/* Existing dashboard content */}
       <div className="space-y-8 w-full">
-        <CollapsibleSection key="kpi" title="Key Portfolio KPIs">
-          <div className="flex flex-row flex-wrap gap-6 justify-center items-center">
-            {kpiCards.map(kpi => (
-              kpi.id === 'portfolio_value' ? (
-                <KpiCard
-                  key={kpi.id}
-                  kpi={kpi}
-                  maskPortfolioValue={maskPortfolioValue}
-                  onToggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
-                />
-              ) : (
-                <KpiCard key={kpi.id} kpi={kpi} />
-              )
-            ))}
-          </div>
-        </CollapsibleSection>
+        {/* Key Portfolio KPIs section now uses dedicated component */}
+        <KeyPortfolioKpis
+          kpis={kpiCards}
+          maskPortfolioValue={maskPortfolioValue}
+          onToggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
+        />
         {/* Distinct section for returns KPIs */}
         {returnsKpiCards.length > 0 && (
           <CollapsibleSection key="returns" title="Recent Portfolio Returns">
@@ -667,9 +660,9 @@ const HomePage: React.FC = () => {
             }
           />
         </CollapsibleSection>
-        <CollapsibleSection key="ticker-performance" title="Ticker Performance" defaultOpen={false}>
+        <CollapsibleSection key="ticker-performance" title="Asset Performance" defaultOpen={false}>
           <GenericPerformanceSection
-            title="Individual Ticker Performance"
+            title="Individual Asset Performance"
             valueType={tickerValueType}
             onValueTypeChange={setTickerValueType}
             data={tickerFiltered}

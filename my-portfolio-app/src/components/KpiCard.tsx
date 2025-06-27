@@ -7,11 +7,18 @@ interface KpiCardProps {
   small?: boolean;
   maskPortfolioValue?: boolean;
   onToggleMaskPortfolioValue?: () => void;
+  /** Optional color override for the card background (e.g., 'green', 'red') */
+  color?: string;
 }
 
-const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small, maskPortfolioValue, onToggleMaskPortfolioValue }) => {
-  const bgColor = TRAFFIC_LIGHT_COLORS[kpi.status] || TRAFFIC_LIGHT_COLORS[TrafficLightStatus.NEUTRAL];
-  const textColor = TRAFFIC_LIGHT_TEXT_COLORS[kpi.status] || TRAFFIC_LIGHT_TEXT_COLORS[TrafficLightStatus.NEUTRAL];
+const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small, maskPortfolioValue, onToggleMaskPortfolioValue, color }) => {
+  // Use color override if provided, otherwise use traffic light color
+  const bgColor = color
+    ? `bg-${color}-600`
+    : TRAFFIC_LIGHT_COLORS[kpi.status] || TRAFFIC_LIGHT_COLORS[TrafficLightStatus.NEUTRAL];
+  const textColor = color
+    ? 'text-white'
+    : TRAFFIC_LIGHT_TEXT_COLORS[kpi.status] || TRAFFIC_LIGHT_TEXT_COLORS[TrafficLightStatus.NEUTRAL];
   
   const IconFromProp = kpi.icon;
   let ResolvedIconComponent: React.ElementType | undefined | null = null;

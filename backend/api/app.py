@@ -528,10 +528,13 @@ def get_portfolio_kpis_api(portfolio_name):
     net_performance = last['pct'] if last and 'pct' in last else 0.0
     # Best/worst/highest tickers
     best_ticker = None
+    best_ticker_name = None
     best_pct = float('-inf')
     worst_ticker = None
+    worst_ticker_name = None
     worst_pct = float('inf')
     highest_value_ticker = None
+    highest_value_ticker_name = None
     highest_value = float('-inf')
     ticker_perf_results = {}
     # Parallelize get_cached_ticker_performance calls
@@ -545,26 +548,38 @@ def get_portfolio_kpis_api(portfolio_name):
             except Exception as exc:
                 app.logger.error(f"Error computing performance for ticker {ticker}: {exc}")
                 ticker_perf_results[ticker] = []
+    import sqlite3
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    def get_ticker_name(symbol):
+        cursor.execute('SELECT shortName FROM ticker_info WHERE ticker = ?', (symbol,))
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else symbol
     for ticker, ticker_perf in ticker_perf_results.items():
         if ticker_perf:
             last_t = ticker_perf[-1]
             pct = last_t.get('pct', 0.0)
             abs_val = last_t.get('abs_value', 0.0)
+            ticker_name = get_ticker_name(ticker)
             if pct > best_pct:
                 best_pct = pct
                 best_ticker = ticker
+                best_ticker_name = ticker_name
             if pct < worst_pct:
                 worst_pct = pct
                 worst_ticker = ticker
+                worst_ticker_name = ticker_name
             if abs_val > highest_value:
                 highest_value = abs_val
                 highest_value_ticker = ticker
+                highest_value_ticker_name = ticker_name
+    conn.close()
     return jsonify({
         'portfolio_value': {'abs_value': abs_value, 'net_value': net_value},
         'net_performance': net_performance,
-        'best_ticker': {'symbol': best_ticker, 'pct': best_pct} if best_ticker else None,
-        'highest_value_ticker': {'symbol': highest_value_ticker, 'abs_value': highest_value} if highest_value_ticker else None,
-        'worst_ticker': {'symbol': worst_ticker, 'pct': worst_pct} if worst_ticker else None
+        'best_ticker': {'symbol': best_ticker, 'ticker_name': best_ticker_name, 'pct': best_pct} if best_ticker else None,
+        'highest_value_ticker': {'symbol': highest_value_ticker, 'ticker_name': highest_value_ticker_name, 'abs_value': highest_value} if highest_value_ticker else None,
+        'worst_ticker': {'symbol': worst_ticker, 'ticker_name': worst_ticker_name, 'pct': worst_pct} if worst_ticker else None
     })
 
 
