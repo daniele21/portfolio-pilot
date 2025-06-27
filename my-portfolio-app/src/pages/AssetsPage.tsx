@@ -4,6 +4,8 @@ import dayjs from 'dayjs';
 import { useAuth } from '../AuthContext';
 import GenericPerformanceSection from '../components/PerformanceSection';
 import MultiSelectListbox from '../components/MultiSelectListBox';
+import TickerReturnsTable from '../components/TickerReturnsTable';
+import CollapsibleSection from '../components/CollapsibleComponent';
 import { fetchTickerPerformance } from '../services/portfolioService';
 
 // --- Types ---
@@ -22,121 +24,6 @@ export interface ReturnMetrics {
 }
 
 const API_BASE_URL = 'http://127.0.0.1:5000';
-
-// -----------------------------------------------------
-// Component: Tickers Returns Table
-// -----------------------------------------------------
-export const TickersReturnsTable: React.FC<{ portfolio: string; idToken?: string | null }> = ({ portfolio, idToken }) => {
-  const [sortKey, setSortKey] = useState<keyof ReturnMetrics>('symbol');
-  const [asc, setAsc] = useState(true);
-
-  const { data: returnsData = [], isLoading, error } = useQuery<ReturnMetrics[]>({
-    queryKey: ['tickerReturns', portfolio, idToken],
-    queryFn: async () => {
-      const res = await fetch(
-        `${API_BASE_URL}/api/portfolio/${portfolio}/returns`,
-        { headers: idToken ? { Authorization: `Bearer ${idToken}` } : {} }
-      );
-      if (!res.ok) {
-        const text = await res.text();
-        console.error('Returns fetch failed:', res.status, text);
-        throw new Error(`HTTP ${res.status}: ${text}`);
-      }
-      const json = await res.json();
-      // Transform backend response to ReturnMetrics[]
-      // Each period (yesterday, weekly, monthly, three_month, ytd) has tickers: {symbol: {return_pct, ...}}
-      const periods = ['yesterday', 'weekly', 'monthly', 'three_month', 'ytd', 'one_year'];
-      const tickersSet = new Set<string>();
-      periods.forEach(period => {
-        if (json[period] && json[period].tickers) {
-          Object.keys(json[period].tickers).forEach(t => tickersSet.add(t));
-        }
-      });
-      const result: ReturnMetrics[] = Array.from(tickersSet).map(symbol => {
-        const obj: any = { symbol };
-        periods.forEach(period => {
-          const tickerData = json[period]?.tickers?.[symbol];
-          obj[`${period}_return`] = tickerData ? tickerData.return_pct : 0;
-        });
-        return obj as ReturnMetrics;
-      });
-      return result;
-    },
-    enabled: !!portfolio && !!idToken
-  });
-
-  const sorted = useMemo(() =>
-    [...returnsData].sort((a, b) => {
-      const va = a[sortKey];
-      const vb = b[sortKey];
-      if (typeof va === 'string') return va.localeCompare(vb as string) * (asc ? 1 : -1);
-      return ((va as number) - (vb as number)) * (asc ? 1 : -1);
-    }),
-  [returnsData, sortKey, asc]);
-
-  const headers: { key: keyof ReturnMetrics; label: string }[] = [
-    { key: 'symbol', label: 'Ticker' },
-    { key: 'yesterday_return', label: '1D' },
-    { key: 'weekly_return', label: '1W' },
-    { key: 'monthly_return', label: '1M' },
-    { key: 'three_month_return', label: '3M' },
-    { key: 'ytd_return', label: 'YTD' },
-    { key: 'one_year_return', label: '1Y' },
-  ];
-
-  const onSort = (key: keyof ReturnMetrics) => {
-    if (key === sortKey) setAsc(!asc);
-    else { setSortKey(key); setAsc(true); }
-  };
-
-  return (
-    <div className="mt-8">
-      <h2 className="text-xl font-semibold text-white mb-2">Ticker Returns</h2>
-      {isLoading ? (
-        <div className="text-gray-300">Loading returns...</div>
-      ) : error ? (
-        <div className="text-red-400">Error loading returns (401 Unauthorized)</div>
-      ) : (
-        <div className="overflow-auto">
-          <table className="min-w-full text-left text-gray-100">
-            <thead>
-              <tr>
-                {headers.map(h => (
-                  <th key={String(h.key)} className="cursor-pointer px-4 py-2" onClick={() => onSort(h.key)}>
-                    {h.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map(row => (
-                <tr key={row.symbol} className="border-t border-gray-700">
-                  <td className="px-4 py-2 font-medium">{row.symbol}</td>
-                  {headers.filter(h => h.key !== 'symbol').map(h => {
-                    const val = (row[h.key] as number).toFixed(2) + '%';
-                    const numVal = Number(row[h.key]);
-                    let colorClass = '';
-                    // Fix for colorClass assignment (find and correct the syntax)
-                    if (!isNaN(numVal)) {
-                      if (numVal > 0) colorClass = 'text-green-400';
-                      else if (numVal < 0) colorClass = 'text-red-400';
-                    }
-                    // If exactly zero, use default color (no class)
-                    return (
-                      <td key={String(h.key)} className="px-4 py-2">
-                        <span className={colorClass}>{val}</span>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-};
 
 // -----------------------------------------------------
 // Page: Asset Analysis
@@ -292,6 +179,12 @@ const AssetAnalysisPage: React.FC = () => {
       {/* Performance Section */}
       {selectedPortfolio && selectedPortfolio !== '--select portfolio--' && (
         <>
+          <CollapsibleSection title="Asset Returns">
+            <TickerReturnsTable
+              portfolio={selectedPortfolio!}
+              idToken={idToken}
+            />
+          </CollapsibleSection>
           <GenericPerformanceSection
             title="Ticker Performance"
             valueType={tickerValueType}
@@ -352,7 +245,6 @@ const AssetAnalysisPage: React.FC = () => {
               />
             }
           />
-          <TickersReturnsTable portfolio={selectedPortfolio} idToken={idToken!} />
         </>
       )}
     </div>
@@ -360,5 +252,3 @@ const AssetAnalysisPage: React.FC = () => {
 };
 
 export default AssetAnalysisPage;
-
-// Remove TickersPerformanceChart component (now replaced by GenericPerformanceSection)
