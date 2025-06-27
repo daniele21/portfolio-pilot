@@ -284,7 +284,8 @@ const HomePage: React.FC = () => {
           value: k.net_performance.toFixed(2) + '%',
           unit: '',
           status: TrafficLightStatus.NEUTRAL,
-          description: 'Net performance relative to cost basis'
+          description: 'Net performance relative to cost basis',
+          color: k.net_performance > 0 ? 'green' : k.net_performance < 0 ? 'red' : undefined
         });
       }
       if (k.best_ticker) {
