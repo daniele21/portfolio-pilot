@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from db.database import init_db, sqlite3, save_ticker_data, get_transactions, save_transactions, delete_portfolio, delete_transaction, get_all_portfolio_names, save_portfolio_status, get_portfolio_status_saved
 from db.database import DATABASE_NAME
 from core.portfolio import (
-    compute_multi_ticker_performance,
+    # compute_multi_ticker_performance,
     compute_portfolio_performance,
     get_portfolio_status,
     get_asset_allocation_by_quote_type,
@@ -27,7 +27,7 @@ from core.portfolio import (
     get_ticker_ytd_returns,
     get_cached_portfolio_performance,
     get_cached_ticker_performance,
-    get_cached_multi_ticker_performance,
+    # get_cached_multi_ticker_performance,
     get_one_year_return,
     get_last_three_days_returns,
 )
@@ -836,23 +836,23 @@ def generate_ticker_report_api(portfolio_name, ticker):
     return jsonify({'ticker': ticker, 'report': report, 'cost': cost})
 
 
-@app.route('/api/portfolio/<string:portfolio_name>/tickers/performance', methods=['POST'])
-@require_google_token
-def multi_ticker_performance_api(portfolio_name):
-    """
-    API endpoint to get the historical value of multiple tickers in a portfolio in one call.
-    Expects JSON body: { "tickers": ["AAPL", "MSFT", ...], "start_date": "YYYY-MM-DD" (optional) }
-    Returns: { ticker: [performance_data, ...], ... }
-    """
-    data = safe_get_json()
-    if isinstance(data, tuple):  # error response from safe_get_json
-        return data
-    tickers = data.get('tickers', [])
-    start_date = data.get('start_date')
-    if not tickers or not isinstance(tickers, list):
-        return jsonify({'error': 'tickers (list) is required'}), 400
-    perf = get_cached_multi_ticker_performance(portfolio_name, tickers, start_date=start_date)
-    return jsonify(perf)
+# @app.route('/api/portfolio/<string:portfolio_name>/tickers/performance', methods=['POST'])
+# @require_google_token
+# def multi_ticker_performance_api(portfolio_name):
+#     """
+#     API endpoint to get the historical value of multiple tickers in a portfolio in one call.
+#     Expects JSON body: { "tickers": ["AAPL", "MSFT", ...], "start_date": "YYYY-MM-DD" (optional) }
+#     Returns: { ticker: [performance_data, ...], ... }
+#     """
+#     data = safe_get_json()
+#     if isinstance(data, tuple):  # error response from safe_get_json
+#         return data
+#     tickers = data.get('tickers', [])
+#     start_date = data.get('start_date')
+#     if not tickers or not isinstance(tickers, list):
+#         return jsonify({'error': 'tickers (list) is required'}), 400
+#     perf = get_cached_multi_ticker_performance(portfolio_name, tickers, start_date=start_date)
+#     return jsonify(perf)
 
 
 @app.route('/api/portfolio/<string:portfolio_name>/tickers', methods=['GET'])

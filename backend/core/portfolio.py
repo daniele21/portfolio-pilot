@@ -66,17 +66,17 @@ def get_cached_ticker_performance(portfolio_name, ticker, start_date=None):
     return data
 
 
-def get_cached_multi_ticker_performance(portfolio_name, tickers, start_date=None):
-    now = time.time()
-    key = (portfolio_name, tuple(sorted(tickers)), str(start_date) if start_date else '')
-    with _CACHE_LOCK:
-        entry = _MULTI_TICKER_PERFORMANCE_CACHE.get(key)
-        if entry and now - entry['ts'] < _CACHE_TTL:
-            return entry['data']
-    data = compute_multi_ticker_performance(portfolio_name, tickers, start_date, _skip_cache=True)
-    with _CACHE_LOCK:
-        _MULTI_TICKER_PERFORMANCE_CACHE[key] = {'data': data, 'ts': now}
-    return data
+# def get_cached_multi_ticker_performance(portfolio_name, tickers, start_date=None):
+#     now = time.time()
+#     key = (portfolio_name, tuple(sorted(tickers)), str(start_date) if start_date else '')
+#     with _CACHE_LOCK:
+#         entry = _MULTI_TICKER_PERFORMANCE_CACHE.get(key)
+#         if entry and now - entry['ts'] < _CACHE_TTL:
+#             return entry['data']
+#     data = compute_multi_ticker_performance(portfolio_name, tickers, start_date, _skip_cache=True)
+#     with _CACHE_LOCK:
+#         _MULTI_TICKER_PERFORMANCE_CACHE[key] = {'data': data, 'ts': now}
+#     return data
 
 
 def get_portfolio_status(portfolio_name):
@@ -187,7 +187,13 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False):
         all_dates.update(df_hist.index)
     if not ticker_histories:
         return []
-    all_dates = sorted(all_dates)
+    # --- Fill date gaps: create a complete date range from min to max date ---
+    if all_dates:
+        min_date = min(all_dates)
+        max_date = max(all_dates)
+        all_dates = pd.date_range(start=min_date, end=max_date, freq='D')
+    else:
+        all_dates = []
     values = []
     first_abs_value = None
     for date in all_dates:
@@ -256,6 +262,13 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
         all_dates = [d for d in all_dates if d >= start_dt]
         if not all_dates:
             return []  # No data on or after start_date
+    # --- Fill date gaps: create a complete date range from min to max date ---
+    if all_dates:
+        min_date = min(all_dates)
+        max_date = max(all_dates)
+        all_dates = pd.date_range(start=min_date, end=max_date, freq='D')
+    else:
+        all_dates = []
     values = []
     abs_value_at_start = None
     for idx, date in enumerate(all_dates):
@@ -284,30 +297,6 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
     return values
 
 
-def compute_multi_ticker_performance(portfolio_name, tickers, start_date=None, _skip_cache=False):
-    if not _skip_cache:
-        return get_cached_multi_ticker_performance(portfolio_name, tickers, start_date)
-    """
-    Compute the performance for multiple tickers in a portfolio in one call.
-    Returns a dict: { ticker: [performance_data, ...], ... }
-    Ensures that each ticker's performance is only computed once per call, and that start_date is passed correctly.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    results = {}
-    if not tickers:
-        return results
-    # Ensure tickers is a list of unique strings (avoid duplicate calls)
-    tickers = list(dict.fromkeys([str(t).upper() for t in tickers if t]))
-    def perf_for_ticker(ticker):
-        return ticker, compute_ticker_performance(portfolio_name, ticker, start_date=start_date)
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        future_to_ticker = {executor.submit(perf_for_ticker, ticker): ticker for ticker in tickers}
-        for future in as_completed(future_to_ticker):
-            ticker, perf = future.result()
-            results[ticker] = perf
-    return results
-
-
 def compute_benchmark_performance(ticker):
     """
     Compute the historical performance of a benchmark ticker (not tied to a portfolio).
@@ -329,6 +318,13 @@ def compute_benchmark_performance(ticker):
     df_hist['date'] = pd.to_datetime(df_hist['date'])
     df_hist.set_index('date', inplace=True)
     all_dates = sorted(df_hist.index)
+    # --- Fill date gaps: create a complete date range from min to max date ---
+    if all_dates:
+        min_date = min(all_dates)
+        max_date = max(all_dates)
+        all_dates = pd.date_range(start=min_date, end=max_date, freq='D')
+    else:
+        all_dates = []
     values = []
     first_value = None
     for date in all_dates:
