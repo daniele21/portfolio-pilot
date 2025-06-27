@@ -101,14 +101,16 @@ const GenericPerformanceSection: React.FC<GenericPerfSectionProps> = ({
         </div>
       </div>
 
-      {/* Date range pickers + YTD */}
-      <DateRangePicker
-        minDate={minDate}
-        maxDate={maxDate}
-        value={dateRange}
-        onChange={onDateRangeChange}
-        onSetYtd={onSetYTD}
-      />
+      {/* Date range pickers */}
+      <div className="flex items-center gap-2 mb-4">
+        <DateRangePicker
+          minDate={minDate}
+          maxDate={maxDate}
+          value={dateRange}
+          onChange={onDateRangeChange}
+          onSetYtd={onSetYTD}
+        />
+      </div>
 
       {/* Chart or states */}
       {loading ? (
@@ -119,7 +121,8 @@ const GenericPerformanceSection: React.FC<GenericPerfSectionProps> = ({
       ) : (hasMulti ? (
         <PerformanceChart
           multiLine
-          lines={series!.map((s, idx) => ({
+          data={series ? series.flatMap(s => s.data) : []}
+          lines={series!.map(s => ({
             data: s.data,
             name: s.name,
             color: undefined

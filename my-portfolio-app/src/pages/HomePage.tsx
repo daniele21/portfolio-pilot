@@ -680,9 +680,11 @@ const HomePage: React.FC = () => {
                     ? ((d.abs_value - firstAbs) / firstAbs) * 100
                     : undefined,
               }));
+              // Find the asset for this symbol to get the name
+              const asset = assetsForSelector.find(a => a.symbol === symbol);
               return {
                 id: symbol,
-                name: symbol,
+                name: asset ? `${asset.name} (${symbol})` : symbol,
                 data: withPctFromFirst,
               };
             })}

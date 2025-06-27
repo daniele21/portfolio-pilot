@@ -1,4 +1,5 @@
 import React, { FC } from 'react';
+import dayjs from 'dayjs';
 
 type DateRange = { start: string; end: string };
 
@@ -45,15 +46,7 @@ const DateRangePicker: FC<DateRangePickerProps> = ({
 
   return (
     <div className={`flex flex-wrap items-center gap-4 mb-4 ${className}`}>
-      <button
-        type="button"
-        className="px-4 py-1 rounded bg-indigo-600 text-white font-semibold hover:bg-indigo-500 text-sm"
-        onClick={onSetYtd}
-        disabled={!minDate}
-      >
-        YTD
-      </button>
-
+      {/* Date range inputs */}
       <label className="text-gray-300 text-sm">From:</label>
       <input
         type="date"
@@ -80,6 +73,43 @@ const DateRangePicker: FC<DateRangePickerProps> = ({
         onClick={handleReset}
       >
         Reset
+      </button>
+
+      {/* Quick range buttons */}
+      <button
+        type="button"
+        className="px-2 py-1 rounded bg-indigo-700 text-white text-xs font-semibold hover:bg-indigo-600 border border-indigo-400"
+        onClick={() => onChange({ start: dayjs(maxDate).subtract(1, 'month').format('YYYY-MM-DD'), end: maxDate })}
+      >
+        1M
+      </button>
+      <button
+        type="button"
+        className="px-2 py-1 rounded bg-indigo-700 text-white text-xs font-semibold hover:bg-indigo-600 border border-indigo-400"
+        onClick={() => onChange({ start: dayjs(maxDate).subtract(3, 'month').format('YYYY-MM-DD'), end: maxDate })}
+      >
+        3M
+      </button>
+      <button
+        type="button"
+        className="px-2 py-1 rounded bg-indigo-700 text-white text-xs font-semibold hover:bg-indigo-600 border border-indigo-400"
+        onClick={() => onChange({ start: dayjs(maxDate).subtract(6, 'month').format('YYYY-MM-DD'), end: maxDate })}
+      >
+        6M
+      </button>
+      <button
+        type="button"
+        className="px-2 py-1 rounded bg-indigo-700 text-white text-xs font-semibold hover:bg-indigo-600 border border-indigo-400"
+        onClick={() => onChange({ start: dayjs(maxDate).subtract(1, 'year').format('YYYY-MM-DD'), end: maxDate })}
+      >
+        1Y
+      </button>
+      <button
+        type="button"
+        className="px-2 py-1 rounded bg-indigo-700 text-white text-xs font-semibold hover:bg-indigo-600 border border-indigo-400"
+        onClick={onSetYtd}
+      >
+        YTD
       </button>
     </div>
   );
