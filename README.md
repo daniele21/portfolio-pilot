@@ -10,6 +10,24 @@ PortfolioPilot is a full-stack application for portfolio management, analysis, a
 - Interactive charts and visualizations
 - User authentication and settings management
 
+## Demo
+
+### Screenshots
+
+![Dashboard Screenshot](demo/Screenshot%202025-07-10%20alle%2009.42.32.png)
+![Portfolio KPIs](demo/Screenshot%202025-07-10%20alle%2009.42.40.png)
+![Performance Chart](demo/Screenshot%202025-07-10%20alle%2009.43.08.png)
+![Asset Allocation](demo/Screenshot%202025-07-10%20alle%2009.43.31.png)
+![Portfolio Details](demo/Screenshot%202025-07-10%20alle%2009.45.21.png)
+
+### Videos
+
+https://github.com/yourusername/portfoliopilot/assets/demo/Registrazione%20schermo%202025-07-10%20alle%2009.44.06.mov
+
+https://github.com/yourusername/portfoliopilot/assets/demo/Registrazione%20schermo%202025-07-10%20alle%2009.52.47.mov
+
+https://github.com/yourusername/portfoliopilot/assets/demo/Registrazione%20schermo%202025-07-10%20alle%2009.53.49.mov
+
 ---
 
 ## Project Structure
