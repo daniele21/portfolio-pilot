@@ -12,6 +12,11 @@ PortfolioPilot is a full-stack application for portfolio management, analysis, a
 
 ## Demo
 
+### Videos
+
+![video](ssss)(https://drive.google.com/file/d/1K5dMAa60Cw8ra5tfL7vbQO-3zEmvZgc6/view?usp=drive_link)
+
+
 ### Screenshots
 
 *Portfolio Overview*
@@ -29,13 +34,6 @@ PortfolioPilot is a full-stack application for portfolio management, analysis, a
 *Asset Performance Overview*
 ![Portfolio Details](demo/Screenshot%202025-07-10%20alle%2009.45.21.png)
 
-### Videos
-
-<video src="demo/Registrazione%20schermo%202025-07-10%20alle%2009.44.06.mov" controls width="600"></video>
-
-<video src="demo/Registrazione%20schermo%202025-07-10%20alle%2009.52.47.mov" controls width="600"></video>
-
-<video src="demo/Registrazione%20schermo%202025-07-10%20alle%2009.53.49.mov" controls width="600"></video>
 
 ---
 
