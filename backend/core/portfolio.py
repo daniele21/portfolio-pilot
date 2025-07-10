@@ -698,3 +698,116 @@ def get_ticker_three_days_returns(portfolio_name, ticker):
     three_days_ago = today - pd.Timedelta(days=3)
     return get_ticker_returns_since(portfolio_name, ticker, three_days_ago.strftime('%Y-%m-%d'))
 
+def compute_volatility(returns, window=None):
+    """
+    Compute the volatility (standard deviation) of returns over a given period.
+    Args:
+        returns: List or pandas Series of periodic returns (as decimals, e.g. 0.01 for 1%).
+        period: Window size in days for rolling volatility. If None, computes volatility over all returns.
+    Returns:
+        If period is None: float (annualized volatility for the whole period)
+        If period is int: pandas Series of rolling annualized volatility
+    """
+    import numpy as np
+    import pandas as pd
+    if not isinstance(returns, pd.Series):
+        returns = pd.Series(returns)
+    # Drop NaN values
+    returns = returns.dropna()
+    if len(returns) == 0:
+        return np.nan if window is None else pd.Series(dtype=float)
+    # By convention, annualize daily volatility by multiplying by sqrt(252)
+    ann_factor = np.sqrt(252)
+    if window is None:
+        return returns.std(ddof=1) * ann_factor
+    else:
+        return returns.rolling(window=window).std(ddof=1) * ann_factor
+
+def compute_portfolio_volatility_1d(portfolio_name):
+    """
+    Compute the portfolio volatility using a 1-day rolling window (annualized).
+    Returns a pandas Series of daily annualized volatility values.
+    """
+    perf = compute_portfolio_performance(portfolio_name)
+    import pandas as pd
+    if not perf or len(perf) < 2:
+        return pd.Series(dtype=float)
+    df = pd.DataFrame(perf)
+    # Use 'pct' as daily return in percent, convert to decimal
+    if 'pct' not in df.columns:
+        return pd.Series(dtype=float)
+    returns = df['pct'] / 100.0
+    return compute_volatility(returns, window=1)
+
+def compute_portfolio_volatility(portfolio_name):
+    """
+    Compute the portfolio volatility (annualized) over the entire period (no rolling window).
+    Returns a float value (annualized volatility).
+    """
+    perf = compute_portfolio_performance(portfolio_name)
+    import pandas as pd
+    if not perf or len(perf) < 2:
+        return float('nan')
+    df = pd.DataFrame(perf)
+    # Use 'pct' as daily return in percent, convert to decimal
+    if 'pct' not in df.columns:
+        return float('nan')
+    returns = df['pct'] / 100.0
+    return compute_volatility(returns, window=None)
+
+def compute_ticker_volatility(portfolio_name):
+    """
+    Compute the annualized volatility (no rolling window) for each ticker in the portfolio.
+    Returns a dict: {ticker: volatility (float), ...}
+    """
+    from db.database import get_transactions
+    import pandas as pd
+    txs = get_transactions(portfolio_name)
+    if not txs:
+        return {}
+    df_txs = pd.DataFrame(txs)
+    if df_txs.empty or 'ticker' not in df_txs.columns:
+        return {}
+    tickers = df_txs['ticker'].unique()
+    result = {}
+    for ticker in tickers:
+        perf = compute_ticker_performance(portfolio_name, ticker)
+        if not perf or len(perf) < 2:
+            result[ticker] = float('nan')
+            continue
+        df = pd.DataFrame(perf)
+        if 'pct' not in df.columns:
+            result[ticker] = float('nan')
+            continue
+        returns = df['pct'] / 100.0
+        result[ticker] = compute_volatility(returns, window=None)
+    return result
+
+def compute_ticker_volatility_1d(portfolio_name):
+    """
+    Compute the annualized volatility for each ticker in the portfolio using a 1-day rolling window.
+    Returns a dict: {ticker: pandas Series of daily annualized volatility, ...}
+    """
+    from db.database import get_transactions
+    import pandas as pd
+    txs = get_transactions(portfolio_name)
+    if not txs:
+        return {}
+    df_txs = pd.DataFrame(txs)
+    if df_txs.empty or 'ticker' not in df_txs.columns:
+        return {}
+    tickers = df_txs['ticker'].unique()
+    result = {}
+    for ticker in tickers:
+        perf = compute_ticker_performance(portfolio_name, ticker)
+        if not perf or len(perf) < 2:
+            result[ticker] = pd.Series(dtype=float)
+            continue
+        df = pd.DataFrame(perf)
+        if 'pct' not in df.columns:
+            result[ticker] = pd.Series(dtype=float)
+            continue
+        returns = df['pct'] / 100.0
+        result[ticker] = compute_volatility(returns, window=1)
+    return result
+

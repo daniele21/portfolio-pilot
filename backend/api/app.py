@@ -30,6 +30,10 @@ from core.portfolio import (
     # get_cached_multi_ticker_performance,
     get_one_year_return,
     get_last_three_days_returns,
+    compute_portfolio_volatility_1d,
+    compute_portfolio_volatility,
+    compute_ticker_volatility,
+    compute_ticker_volatility_1d,
 )
 from core.report_generator import generate_portfolio_report_with_gemini, generate_multi_ticker_report_with_gemini, generate_ticker_report_with_gemini
 from services.data_fetcher import fetch_with_cache
@@ -836,45 +840,57 @@ def generate_ticker_report_api(portfolio_name, ticker):
     return jsonify({'ticker': ticker, 'report': report, 'cost': cost})
 
 
-# @app.route('/api/portfolio/<string:portfolio_name>/tickers/performance', methods=['POST'])
-# @require_google_token
-# def multi_ticker_performance_api(portfolio_name):
-#     """
-#     API endpoint to get the historical value of multiple tickers in a portfolio in one call.
-#     Expects JSON body: { "tickers": ["AAPL", "MSFT", ...], "start_date": "YYYY-MM-DD" (optional) }
-#     Returns: { ticker: [performance_data, ...], ... }
-#     """
-#     data = safe_get_json()
-#     if isinstance(data, tuple):  # error response from safe_get_json
-#         return data
-#     tickers = data.get('tickers', [])
-#     start_date = data.get('start_date')
-#     if not tickers or not isinstance(tickers, list):
-#         return jsonify({'error': 'tickers (list) is required'}), 400
-#     perf = get_cached_multi_ticker_performance(portfolio_name, tickers, start_date=start_date)
-#     return jsonify(perf)
-
-
-@app.route('/api/portfolio/<string:portfolio_name>/tickers', methods=['GET'])
-def get_portfolio_tickers_api(portfolio_name):
+@app.route('/api/portfolio/<string:portfolio_name>/volatility', methods=['GET'])
+def get_portfolio_volatility_api(portfolio_name):
     """
-    API endpoint to get all distinct tickers for a given portfolio.
-    Returns a JSON list of tickers.
+    API endpoint to get the portfolio annualized volatility (no window).
+    Returns a float value.
     """
-    try:
-        from db.database import sqlite3, DATABASE_NAME
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
-        cursor.execute('SELECT DISTINCT ticker FROM transactions WHERE portfolio = ?', (portfolio_name,))
-        rows = cursor.fetchall()
-        conn.close()
-        tickers = [row[0] for row in rows if row[0]]
-        return jsonify({'tickers': tickers})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    vol = compute_portfolio_volatility(portfolio_name)
+    # Ensure JSON serializable (float or None)
+    return jsonify({'volatility': float(vol) if vol is not None else None})
 
+@app.route('/api/portfolio/<string:portfolio_name>/volatility/1d', methods=['GET'])
+def get_portfolio_volatility_1d_api(portfolio_name):
+    """
+    API endpoint to get the portfolio annualized volatility as a list of daily values (1-day window).
+    Returns a list of floats.
+    """
+    vol_series = compute_portfolio_volatility_1d(portfolio_name)
+    # Convert pandas Series to list of floats (or empty list)
+    if hasattr(vol_series, 'tolist'):
+        vol_list = [float(v) if v is not None else None for v in vol_series.tolist()]
+    elif isinstance(vol_series, list):
+        vol_list = [float(v) if v is not None else None for v in vol_series]
+    else:
+        vol_list = []
+    return jsonify({'volatility_1d': vol_list})
 
-if __name__ == '__main__':
-    # Run the Flask app
-    # In a production environment, you would use a proper WSGI server like Gunicorn
-    app.run(host="0.0.0.0", port=5000, debug=False)
+@app.route('/api/portfolio/<string:portfolio_name>/tickers/volatility', methods=['GET'])
+def get_ticker_volatility_api(portfolio_name):
+    """
+    API endpoint to get per-ticker annualized volatility (no window).
+    Returns a dict: {ticker: float, ...}
+    """
+    result = compute_ticker_volatility(portfolio_name)
+    # Ensure all values are floats or None
+    result = {k: float(v) if v is not None else None for k, v in result.items()}
+    return jsonify({'tickers_volatility': result})
+
+@app.route('/api/portfolio/<string:portfolio_name>/tickers/volatility/1d', methods=['GET'])
+def get_ticker_volatility_1d_api(portfolio_name):
+    """
+    API endpoint to get per-ticker annualized volatility as dict of lists of daily values (1-day window).
+    Returns a dict: {ticker: [float, ...], ...}
+    """
+    result = compute_ticker_volatility_1d(portfolio_name)
+    # Convert pandas Series to list of floats for each ticker
+    out = {}
+    for k, v in result.items():
+        if hasattr(v, 'tolist'):
+            out[k] = [float(x) if x is not None else None for x in v.tolist()]
+        elif isinstance(v, list):
+            out[k] = [float(x) if x is not None else None for x in v]
+        else:
+            out[k] = []
+    return jsonify({'tickers_volatility_1d': out})

@@ -17,11 +17,6 @@ export default defineConfig(({ mode }) => {
         process: 'process/browser'
       },
       dedupe: ['react', 'react-dom']
-    },
-    server: {
-      proxy: {
-        '/api': 'http://localhost:5000'
-      }
     }
   };
 });

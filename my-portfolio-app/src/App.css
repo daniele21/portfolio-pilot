@@ -18,6 +18,10 @@
   filter: drop-shadow(0 0 2em #61dafbaa);
 }
 
+.text-responsive {
+  font-size: clamp(1rem, 2vw, 1.25rem);
+}
+
 @keyframes logo-spin {
   from {
     transform: rotate(0deg);

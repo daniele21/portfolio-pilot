@@ -451,3 +451,25 @@ export const fetchPortfolioReport = async (portfolioName: string, force: boolean
     return null;
   }
 };
+
+// Fetch portfolio volatility from the backend API
+export async function fetchPortfolioVolatility(portfolioName: string): Promise<number | null> {
+  if (!portfolioName) return null;
+  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/volatility`;
+  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  const idToken = getAuthIdToken();
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+  try {
+    const res = await fetch(apiUrl, { headers });
+    if (res.status === 401) {
+      const data = await res.json().catch(() => ({}));
+      throw { status: 401, message: data?.error || 'Invalid or expired token' };
+    }
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data?.volatility === 'number' ? data.volatility : null;
+  } catch (e) {
+    return null;
+  }
+}

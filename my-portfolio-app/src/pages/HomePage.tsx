@@ -2,7 +2,7 @@ import React, { Fragment } from 'react';
 import KpiCard from '../components/KpiCard';
 import SunburstChart from '../components/SunburstChart';
 import { Kpi, HistoricalDataPoint, TrafficLightStatus } from '../types';
-import { getAssets, processAndApplyMovements, fetchAllPortfolioNames, fetchPortfolioPerformance, fetchTickerPerformance, fetchPortfolioKpis, fetchPortfolioAllocation, fetchPortfolioReturnsKpis } from '../services/portfolioService';
+import { getAssets, processAndApplyMovements, fetchAllPortfolioNames, fetchPortfolioPerformance, fetchTickerPerformance, fetchPortfolioKpis, fetchPortfolioAllocation, fetchPortfolioReturnsKpis, fetchPortfolioVolatility } from '../services/portfolioService';
 import { PresentationChartLineIcon } from '@heroicons/react/24/outline';
 import { useAuth } from '../AuthContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
@@ -257,6 +257,17 @@ const HomePage: React.FC = () => {
     console.log('[DEBUG] Raw kpis state:', kpis);
   }, [kpis]);
 
+  // --- Portfolio Volatility: Use React Query to fetch from backend API ---
+  const {
+    data: portfolioVolatility,
+    isLoading: volatilityLoading,
+    error: volatilityError
+  } = useQuery({
+    queryKey: ['portfolioVolatility', selectedPortfolio, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioVolatility(selectedPortfolio) : null,
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
+  });
+
   const kpiCards = React.useMemo(() => {
     // Debug log for mapping
     console.log('[DEBUG] Mapping kpis to kpiCards:', kpis);
@@ -286,6 +297,24 @@ const HomePage: React.FC = () => {
           status: TrafficLightStatus.NEUTRAL,
           description: 'Net performance relative to cost basis',
           color: k.net_performance > 0 ? 'green' : k.net_performance < 0 ? 'red' : undefined
+        });
+      }
+      // --- Always add portfolio volatility card if available from either API or KPIs object ---
+      let volatilityValue: number | undefined = undefined;
+      if (typeof portfolioVolatility === 'number') {
+        volatilityValue = portfolioVolatility;
+      } else if (typeof k.volatility === 'number') {
+        volatilityValue = k.volatility;
+      }
+      if (typeof volatilityValue === 'number') {
+        cards.push({
+          id: 'portfolio_volatility',
+          name: 'Volatility (Ann.)',
+          value: volatilityValue.toFixed(2) + '%',
+          unit: '',
+          status: TrafficLightStatus.NEUTRAL,
+          description: 'Annualized portfolio volatility',
+          icon: PresentationChartLineIcon
         });
       }
       if (k.best_ticker) {
@@ -324,7 +353,7 @@ const HomePage: React.FC = () => {
       return cards;
     }
     return [];
-  }, [kpis, maskPortfolioValue]);
+  }, [kpis, maskPortfolioValue, portfolioVolatility]);
 
   // Allocation view state: 'overall' or 'quoteType'
   const [allocationView, setAllocationView] = React.useState<'overall' | 'quoteType'>('overall');

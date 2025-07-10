@@ -9,7 +9,7 @@ import PortfolioStatusPage from './pages/PortfolioStatusPage';
 import ReportPage from './pages/ReportPage';
 import TickerLookupPage from './pages/TickerLookupPage';
 import AssetsPage from './pages/AssetsPage';
-import { HomeIcon, ChartPieIcon, ChatBubbleLeftEllipsisIcon, Cog6ToothIcon, ClipboardDocumentListIcon, MagnifyingGlassCircleIcon, ArrowRightOnRectangleIcon, UserCircleIcon } from '@heroicons/react/24/outline';
+import { HomeIcon, ChartPieIcon, ChatBubbleLeftEllipsisIcon, Cog6ToothIcon, ClipboardDocumentListIcon, MagnifyingGlassCircleIcon, ArrowRightOnRectangleIcon, UserCircleIcon, Bars3Icon, ChevronDoubleLeftIcon, ChevronDoubleRightIcon } from '@heroicons/react/24/outline';
 import { resetPortfolioDataToMocks, isPortfolioInitialized, markPortfolioAsInitialized, initialLoad as initialPortfolioLoad } from './services/portfolioService';
 import { useAuth } from './AuthContext';
 
@@ -17,6 +17,7 @@ const App: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [showInitialChoiceModal, setShowInitialChoiceModal] = useState<boolean>(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { isLoggedIn, profile, handleSignOut, GOOGLE_CLIENT_ID, isGoogleAuthReady, idToken } = useAuth();
   const signInButtonRef = useRef<HTMLDivElement>(null);
 
@@ -98,19 +99,32 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-gray-900 text-gray-100 font-sans">
-      <aside className="w-64 bg-gray-800 p-6 space-y-6 border-r border-gray-700 flex flex-col">
+      <aside className={`transition-all duration-300 bg-gray-800 border-r border-gray-700 flex flex-col ${sidebarCollapsed ? 'w-20 p-2' : 'w-64 p-6'} space-y-6`}>
         <div>
-          <div className="text-3xl font-bold text-indigo-400 mb-8">My Financial Investments</div>
+          <button
+            className="flex items-center justify-center mb-6 w-8 h-8 rounded hover:bg-gray-700 transition-colors"
+            onClick={() => setSidebarCollapsed((c) => !c)}
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {sidebarCollapsed ? (
+              <ChevronDoubleRightIcon className="h-6 w-6 text-indigo-400" />
+            ) : (
+              <ChevronDoubleLeftIcon className="h-6 w-6 text-indigo-400" />
+            )}
+          </button>
+          {!sidebarCollapsed && (
+            <div className="text-3xl font-bold text-indigo-400 mb-8">My Financial Investments</div>
+          )}
           <nav className="space-y-2">
             {navItems.map((item) => (
               <Link
                 key={item.path}
                 to={item.path}
-                className={`flex items-center space-x-3 p-3 rounded-lg hover:bg-gray-700 transition-colors duration-150
+                className={`flex items-center ${sidebarCollapsed ? 'justify-center' : ''} space-x-3 p-3 rounded-lg hover:bg-gray-700 transition-colors duration-150
                   ${location.pathname === item.path ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-300 hover:text-white'}`}
               >
                 <item.icon className="h-6 w-6" />
-                <span>{item.label}</span>
+                {!sidebarCollapsed && <span>{item.label}</span>}
               </Link>
             ))}
           </nav>
@@ -118,37 +132,35 @@ const App: React.FC = () => {
         <div className="mt-auto pt-6 border-t border-gray-700 space-y-3">
            <Link
               to="/settings"
-              className={`flex items-center space-x-3 p-3 rounded-lg hover:bg-gray-700 transition-colors duration-150
+              className={`flex items-center ${sidebarCollapsed ? 'justify-center' : ''} space-x-3 p-3 rounded-lg hover:bg-gray-700 transition-colors duration-150
                 ${location.pathname === '/settings' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-300 hover:text-white'}`}
             >
               <Cog6ToothIcon className="h-6 w-6" />
-              <span>Settings</span>
+              {!sidebarCollapsed && <span>Settings</span>}
             </Link>
-            
             {isLoggedIn && profile ? (
-              <div className="text-center space-y-2">
+              <div className={`text-center space-y-2 ${sidebarCollapsed ? 'flex flex-col items-center' : ''}`}> 
                 {profile.picture ? (
                     <img src={profile.picture} alt="User" className="w-10 h-10 rounded-full mx-auto border-2 border-indigo-500"/>
                 ) : (
                     <UserCircleIcon className="w-10 h-10 mx-auto text-gray-400"/>
                 )}
-                <p className="text-xs text-gray-300 truncate" title={profile.email}>{profile.name || profile.email}</p>
+                {!sidebarCollapsed && <p className="text-xs text-gray-300 truncate" title={profile.email}>{profile.name || profile.email}</p>}
                 <button
                   onClick={handleSignOut}
-                  className="w-full flex items-center justify-center space-x-2 p-2 rounded-lg text-sm bg-red-600 hover:bg-red-700 text-white transition-colors"
+                  className={`w-full flex items-center justify-center space-x-2 p-2 rounded-lg text-sm bg-red-600 hover:bg-red-700 text-white transition-colors ${sidebarCollapsed ? 'justify-center' : ''}`}
                 >
                   <ArrowRightOnRectangleIcon className="h-5 w-5" />
-                  <span>Sign Out</span>
+                  {!sidebarCollapsed && <span>Sign Out</span>}
                 </button>
               </div>
             ) : (
-              <div id="signInDivRef" ref={signInButtonRef} className="flex justify-center py-2 min-h-[50px]">
-                {!isGoogleAuthReady && <p className="text-xs text-gray-500">Loading Sign-In...</p>}
+              <div id="signInDivRef" ref={signInButtonRef} className={`flex justify-center py-2 min-h-[50px] ${sidebarCollapsed ? 'px-0' : ''}`}>
+                {!isGoogleAuthReady && !sidebarCollapsed && <p className="text-xs text-gray-500">Loading Sign-In...</p>}
               </div>
             )}
         </div>
       </aside>
-
       <main className="flex-1 p-8 overflow-y-auto bg-gray-900">
          {(!isLoggedIn && (location.pathname !== '/ticker-lookup' && location.pathname !== '/settings')) && !showInitialChoiceModal && (
             <div className="flex flex-col items-center justify-center h-full text-center">
