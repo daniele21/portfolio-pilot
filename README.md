@@ -14,7 +14,11 @@ PortfolioPilot is a full-stack application for portfolio management, analysis, a
 
 ### Videos
 
-![video](ssss)(https://drive.google.com/file/d/1K5dMAa60Cw8ra5tfL7vbQO-3zEmvZgc6/view?usp=drive_link)
+![Portfolio Overview](https://drive.google.com/file/d/1K5dMAa60Cw8ra5tfL7vbQO-3zEmvZgc6/view?usp=drive_link)
+
+![Portfolio Report]([https://drive.google.com/file/d/1K5dMAa60Cw8ra5tfL7vbQO-3zEmvZgc6/view?usp=drive_link](https://drive.google.com/file/d/1xS9220xQtTgULe8qvE714PDpvw1m_yfl/view?usp=drive_link))
+
+![Asset Report]([https://drive.google.com/file/d/1K5dMAa60Cw8ra5tfL7vbQO-3zEmvZgc6/view?usp=drive_link](https://drive.google.com/file/d/1YnAKZlb-c1PLWwSPOZWYSa2tZiBa5Dw8/view?usp=drive_link))
 
 
 ### Screenshots
