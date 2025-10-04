@@ -1,0 +1,17 @@
+{
+  "name": "PortfolioPilot",
+  "short_name": "PortfolioPilot",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "description": "Modern portfolio analysis and advisor assistant.",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

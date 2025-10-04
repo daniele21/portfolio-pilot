@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { DocumentArrowUpIcon, Cog8ToothIcon, CheckCircleIcon, ExclamationCircleIcon, ArrowPathIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
 import { processAndApplyMovements, resetPortfolioDataToMocks, initialLoad as initialPortfolioLoad } from '../services/portfolioService';
-import { ProcessMovementsResult, StandardizedMovement } from '../types';
+import type { ProcessMovementsResult, StandardizedMovement } from '../types';
 import { useAuth } from '../AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { ErrorBoundary } from '../components/ErrorBoundary';
@@ -65,7 +65,7 @@ const SettingsPage: React.FC = () => {
         });
         
         // After successful processing and POSTing to backend, trigger a refresh and navigate
-        await initialPortfolioLoad(); // This re-fetches from backend
+  await initialPortfolioLoad('main');
         // navigate('/'); // Optionally navigate to home to see updated portfolio
 
         setSelectedFile(null); 
@@ -93,8 +93,8 @@ const SettingsPage: React.FC = () => {
     try {
         // This function now primarily clears local session state.
         // The backend would need its own mechanism for clearing if that's desired.
-        await resetPortfolioDataToMocks(true); 
-        await initialPortfolioLoad(); // Re-fetch from (potentially empty) backend
+  await resetPortfolioDataToMocks();
+  await initialPortfolioLoad('main');
         setFeedback({ type: 'success', message: 'Local session data cleared. Portfolio view will refresh from backend.' });
         navigate('/'); // Navigate to home to see the refreshed (potentially empty) state
     } catch (error) {

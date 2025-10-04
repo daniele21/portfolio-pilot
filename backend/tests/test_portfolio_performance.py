@@ -1,12 +1,7 @@
-import portfolio
+from core import portfolio as portfolio_core
 
-def test_compute_portfolio_performance():
-    # Replace 'TestPortfolio' with a real portfolio name in your DB for a real test
-    portfolio_name = 'Degiro'
-    result = portfolio.compute_portfolio_performance(portfolio_name)
-    print(f"Performance for {portfolio_name}:")
-    for entry in result:
-        print(entry)
-
-if __name__ == "__main__":
-    test_compute_portfolio_performance()
+def test_compute_portfolio_performance_smoke():
+    # Use a portfolio name that may or may not exist; function should return a list (possibly empty) without raising.
+    portfolio_name = 'TestPortfolio'
+    result = portfolio_core.compute_portfolio_performance(portfolio_name)
+    assert isinstance(result, list)

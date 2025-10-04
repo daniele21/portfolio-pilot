@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { ChatMessage, GroundingChunk, GroundingChunkWeb, CopilotAction, Asset } from '../types';
+import type { ChatMessage, GroundingChunk, GroundingChunkWeb, CopilotAction as CopilotActionType } from '../types';
+import { CopilotAction } from '../types';
 import { PaperAirplaneIcon, UserCircleIcon, SparklesIcon, LinkIcon, DocumentChartBarIcon, NewspaperIcon } from '@heroicons/react/24/solid';
 import { getChatResponse, getPortfolioAnalysis, getAssetNews } from '../services/geminiService';
 import { getAssets } from '../services/portfolioService';
@@ -18,7 +19,7 @@ const ChatInterface: React.FC = () => {
 
   useEffect(scrollToBottom, [messages]);
 
-  const handleSendMessage = useCallback(async (actionType: CopilotAction = CopilotAction.GENERAL_QUERY, predefinedQuery?: string) => {
+  const handleSendMessage = useCallback(async (actionType: CopilotActionType = CopilotAction.GENERAL_QUERY, predefinedQuery?: string) => {
     const currentInput = predefinedQuery || input;
     if (currentInput.trim() === '' && actionType === CopilotAction.GENERAL_QUERY) return;
 
@@ -37,12 +38,12 @@ const ChatInterface: React.FC = () => {
       let aiSources: GroundingChunk[] | undefined = undefined;
 
       if (actionType === CopilotAction.ANALYZE_PORTFOLIO) {
-        const assets = await getAssets();
+  const assets = await getAssets('main');
         const analysis = await getPortfolioAnalysis(assets);
         aiResponseText = analysis.text;
         aiSources = analysis.sources;
       } else if (actionType === CopilotAction.GET_ASSET_NEWS) {
-        const assets = await getAssets();
+  const assets = await getAssets('main');
         // Get top 5 asset symbols by value
         const topAssetSymbols = assets
           .sort((a, b) => b.value - a.value)

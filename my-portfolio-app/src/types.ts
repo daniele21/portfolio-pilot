@@ -1,9 +1,11 @@
-export enum TrafficLightStatus {
-  GREEN = 'GREEN',
-  AMBER = 'AMBER',
-  RED = 'RED',
-  NEUTRAL = 'NEUTRAL'
-}
+// Replace enums (not allowed with erasableSyntaxOnly) with const objects + union types
+export const TrafficLightStatus = {
+  GREEN: 'GREEN',
+  AMBER: 'AMBER',
+  RED: 'RED',
+  NEUTRAL: 'NEUTRAL'
+} as const;
+export type TrafficLightStatus = typeof TrafficLightStatus[keyof typeof TrafficLightStatus];
 
 export interface Kpi {
   id: string;
@@ -106,11 +108,12 @@ export interface ProcessMovementsResult {
   successfullyProcessedMovements?: StandardizedMovement[];
 }
 
-export enum CopilotAction {
-  ANALYZE_PORTFOLIO = "ANALYZE_PORTFOLIO",
-  GET_ASSET_NEWS = "GET_ASSET_NEWS",
-  GENERAL_QUERY = "GENERAL_QUERY"
-}
+export const CopilotAction = {
+  ANALYZE_PORTFOLIO: 'ANALYZE_PORTFOLIO',
+  GET_ASSET_NEWS: 'GET_ASSET_NEWS',
+  GENERAL_QUERY: 'GENERAL_QUERY'
+} as const;
+export type CopilotAction = typeof CopilotAction[keyof typeof CopilotAction];
 
 // Types for Ticker Lookup (/api/ticker/<symbol>)
 export interface TickerInfoDetails { // Matches yfinance info structure (subset)
@@ -218,4 +221,27 @@ export interface BackendSaveTransactionsResponse {
   status: 'saved' | 'error' | string; // 'saved' is success
   count?: number;
   message?: string; // For errors or additional info
+}
+
+// Ingestion (file or raw) response shape
+export interface BackendIngestTransactionsResponse extends BackendSaveTransactionsResponse {
+  portfolio?: string;
+  transactions?: any[]; // TODO: refine typing to StandardizedMovement-like
+  used_llm?: boolean;
+  sources?: string[];
+  error?: string;
+}
+
+// Return metrics type for TickerReturnsTable
+export interface ReturnMetrics {
+  name: string;
+  symbol: string;
+  yesterday_return: number;
+  three_days_return: number;
+  weekly_return: number;
+  monthly_return: number;
+  three_month_return: number;
+  ytd_return: number;
+  one_year_return: number;
+  [key: string]: string | number; // index signature for dynamic access
 }

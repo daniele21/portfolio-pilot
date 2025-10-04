@@ -1,11 +1,16 @@
-import { Kpi, Asset, PortfolioData, StandardizedMovement, MovementType, HistoricalDataPoint, ProcessMovementsResult, TrafficLightStatus, PortfolioStatusResponse, PortfolioPerformanceResponse, PortfolioHolding, BackendTransactionPayloadItem, BackendSaveTransactionsResponse, BackendTransactionPayloadStructured } from '../types';
-import { MOCK_KPIS_DATA } from '../constants'; // Keep for structure and some default texts/icons
-import { fetchTickerDetails, fetchHistoricalMarketPrices } from './marketDataService';
-import { BanknotesIcon, PresentationChartLineIcon } from '@heroicons/react/24/outline';
+import type { Kpi, Asset, PortfolioData, StandardizedMovement, HistoricalDataPoint, ProcessMovementsResult, PortfolioStatusResponse, PortfolioPerformanceResponse, PortfolioHolding, BackendIngestTransactionsResponse } from '../types';
+import { TrafficLightStatus } from '../types';
+import { MOCK_KPIS_DATA } from '../constants';
+import { fetchTickerDetails } from './marketDataService';
+import { idbGet, idbSet, idbDel } from '../utils/idbCache';
 
 // const API_BASE_URL = 'https://finance-data-server-335283962900.europe-west1.run.app';
 const API_BASE_URL = 'http://127.0.0.1:5000';
 const DEFAULT_PORTFOLIO_ID = 'main'; // Or make this dynamic if multiple portfolios are supported
+
+// Cache TTLs (ms) - align with react-query defaults in main.tsx
+const CACHE_TTL_SHORT = 10 * 60 * 1000; // 10 minutes
+const CACHE_TTL_LONG = 15 * 60 * 1000; // 15 minutes
 
 let _isInitialized = false;
 let localAppliedMovementsLog: StandardizedMovement[] = []; // Temporary client-side log
@@ -49,13 +54,55 @@ const commonPortfolioFetch = async <T>(endpoint: string, portfolioId: string): P
 // Fetch portfolio status for a given portfolio name using the new endpoint
 export const fetchPortfolioStatus = async (portfolioName: string): Promise<PortfolioStatusResponse | null> => {
   if (!portfolioName) return null;
-  return await commonPortfolioFetch<PortfolioStatusResponse>('status', portfolioName);
+  const cacheKey = `status:${portfolioName}`;
+  // Try cache first
+  try {
+    const cached = await idbGet(cacheKey);
+    if (cached) return cached as PortfolioStatusResponse;
+  } catch (e) {
+    // ignore cache errors
+  }
+  const raw = await commonPortfolioFetch<any>('status', portfolioName);
+  if (!raw) return null;
+  // Backend may return { last_updated: ..., status: { holdings: [...], total_value: ... } }
+  // Normalize to PortfolioStatusResponse { holdings, total_value, last_updated }
+  let normalized: PortfolioStatusResponse;
+  if (raw.status && (Array.isArray(raw.status.holdings) || raw.status.total_value !== undefined)) {
+    normalized = {
+      holdings: Array.isArray(raw.status.holdings) ? raw.status.holdings : [],
+      total_value: raw.status.total_value ?? 0,
+      last_updated: raw.last_updated ?? raw.status.last_updated ?? undefined
+    };
+  } else {
+    normalized = raw as PortfolioStatusResponse;
+  }
+  // Cache normalized response
+  try { await idbSet(cacheKey, normalized, CACHE_TTL_SHORT); } catch (e) {}
+  return normalized;
 };
 
 // Fetch live (computed) portfolio status for a given portfolio name
 export const fetchPortfolioStatusLive = async (portfolioName: string): Promise<PortfolioStatusResponse | null> => {
   if (!portfolioName) return null;
-  return await commonPortfolioFetch<PortfolioStatusResponse>('status/live', portfolioName);
+  const cacheKey = `status_live:${portfolioName}`;
+  try {
+    const cached = await idbGet(cacheKey);
+    if (cached) return cached as PortfolioStatusResponse;
+  } catch {}
+  const raw = await commonPortfolioFetch<any>('status/live', portfolioName);
+  if (!raw) return null;
+  let normalized: PortfolioStatusResponse;
+  if (raw.status && (Array.isArray(raw.status.holdings) || raw.status.total_value !== undefined)) {
+    normalized = {
+      holdings: Array.isArray(raw.status.holdings) ? raw.status.holdings : [],
+      total_value: raw.status.total_value ?? 0,
+      last_updated: raw.last_updated ?? raw.status.last_updated ?? undefined
+    };
+  } else {
+    normalized = raw as PortfolioStatusResponse;
+  }
+  try { await idbSet(cacheKey, normalized, CACHE_TTL_SHORT); } catch (e) {}
+  return normalized;
 };
 
 // Save the current computed status to the backend
@@ -70,6 +117,8 @@ export const savePortfolioStatus = async (portfolioName: string): Promise<{ stat
   try {
     const response = await fetch(apiUrl, { method: 'POST', headers });
     const data = await response.json();
+    // Invalidate cached status so next read is fresh
+    try { await idbDel(`status:${portfolioName}`); await idbDel(`status_live:${portfolioName}`); } catch {}
     return data;
   } catch (error) {
     return { status: 'error', portfolio: portfolioName, error: error instanceof Error ? error.message : String(error) };
@@ -249,6 +298,49 @@ export const processAndApplyMovements = async (fileContent: string): Promise<Pro
   }
 };
 
+// New: ingest transactions via new backend endpoint (files or raw)
+export const ingestTransactions = async (portfolioName: string, files: File[], rawText: string | null): Promise<BackendIngestTransactionsResponse> => {
+  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const endpoint = `${cleanApiBaseUrl}/api/transactions/ingest/${encodeURIComponent(portfolioName)}`;
+  const idToken = getAuthIdToken();
+  if (!idToken) return { status: 'error', message: 'Not authenticated' };
+  try {
+    let response: Response;
+    if (files.length > 0) {
+      const form = new FormData();
+      files.forEach(f => form.append('file', f, f.name));
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${idToken}` },
+        body: form
+      });
+    } else if (rawText) {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw: rawText })
+      });
+    } else {
+      return { status: 'error', message: 'No files or raw text provided' };
+    }
+    const data = await response.json();
+    if (!response.ok) {
+      return { status: data.status || 'error', message: data.error || data.message || 'Ingestion failed', error: data.error };
+    }
+    // On successful ingestion, invalidate relevant caches so UI reloads fresh data
+    try {
+      await idbDel('portfolio_names');
+      await idbDel(`status:${portfolioName}`);
+      await idbDel(`status_live:${portfolioName}`);
+    } catch {
+      // ignore cache errors
+    }
+    return data as BackendIngestTransactionsResponse;
+  } catch (e) {
+    return { status: 'error', message: e instanceof Error ? e.message : String(e) };
+  }
+};
+
 export const resetPortfolioDataToMocks = async (): Promise<void> => {
   localAppliedMovementsLog = [];
   _isInitialized = false; // Force re-fetch on next access
@@ -290,10 +382,17 @@ export const fetchAllPortfolioNames = async (): Promise<string[]> => {
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+  const cacheKey = 'portfolio_names';
+  try {
+    const cached = await idbGet(cacheKey);
+    if (Array.isArray(cached) && cached.length > 0) return cached;
+  } catch {}
   try {
     const response = await fetch(apiUrl, { headers });
     if (!response.ok) throw new Error('Failed to fetch portfolio names');
     const data = await response.json();
+    const toCache = Array.isArray(data.portfolios) ? data.portfolios : [];
+    try { await idbSet(cacheKey, toCache, CACHE_TTL_LONG); } catch {}
     return Array.isArray(data.portfolios) ? data.portfolios : [];
   } catch (e) {
     console.error('Error fetching portfolio names', e);

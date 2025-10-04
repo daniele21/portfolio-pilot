@@ -1,4 +1,4 @@
-import React, { useState, ReactNode, FC } from 'react';
+import { useState, type ReactNode, type FC } from 'react';
 
 export interface CollapsibleSectionProps {
   /** Section title shown in header */
@@ -17,22 +17,27 @@ const CollapsibleSection: FC<CollapsibleSectionProps> = ({ title, children, defa
     <div className="mb-4">
       <button
         type="button"
-        className="w-full flex items-center justify-between px-4 py-2 bg-gray-700 rounded-t-lg focus:outline-none text-left text-white font-semibold text-lg hover:bg-gray-600 transition-colors"
+        className="relative z-10 w-full flex items-center justify-between px-4 py-2 bg-gray-700 rounded-t-lg focus:outline-none text-left text-white font-semibold text-lg hover:bg-gray-600 transition-colors focus-visible:ring-2 focus-visible:ring-indigo-500"
         onClick={() => setIsOpen(open => !open)}
         aria-expanded={isOpen}
         aria-controls={sectionId}
       >
         <span>{title}</span>
-        <span className={`transform transition-transform duration-200 ${isOpen ? '' : 'rotate-180'}`}>▼</span>
-      </button>
-      {isOpen && (
-        <div
-          id={sectionId}
-          className="bg-gray-800 rounded-b-lg p-6 border-t border-gray-700"
+        <span
+          aria-hidden="true"
+          className={`transform transition-transform duration-200 ${isOpen ? '' : 'rotate-180'}`}
         >
-          {children}
-        </div>
-      )}
+          ▼
+        </span>
+      </button>
+      <div
+        id={sectionId}
+        role="region"
+        aria-labelledby={sectionId + '-label'}
+        className={`${isOpen ? 'block' : 'hidden'} bg-gray-800 rounded-b-lg p-6 border-t border-gray-700`}
+      >
+        {children}
+      </div>
     </div>
   );
 };

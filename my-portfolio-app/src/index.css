@@ -25,9 +25,11 @@ a:hover {
 body {
   margin: 0;
   display: initial;
-  place-items: center;
   min-width: 320px;
   min-height: 100vh;
+  background: #0b1220; /* unify with mobile.css theme */
+  color: rgba(255,255,255,0.87);
+  transition: background-color .15s ease;
 }
 
 h1 {

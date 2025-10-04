@@ -1,6 +1,6 @@
 import React from 'react';
 import CollapsibleSection from './CollapsibleComponent';
-import KpiCard from '../components/KpiCard';
+import KpiCard from './KpiCard';
 import type { Kpi } from '../types';
 
 export interface KeyPortfolioKpisProps {

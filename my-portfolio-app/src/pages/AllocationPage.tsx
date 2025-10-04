@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import SunburstChart from '../components/SunburstChart';
-import { Asset } from '../types';
+import type { Asset } from '../types';
 import { getAssets, isPortfolioInitialized, initialLoad as initialPortfolioLoad } from '../services/portfolioService';
 import { TableCellsIcon, DocumentMagnifyingGlassIcon, ArrowUpIcon, ArrowDownIcon, ShieldCheckIcon, ShieldExclamationIcon } from '@heroicons/react/24/outline';
 import { useAuth } from '../AuthContext';
@@ -27,9 +27,9 @@ const AllocationPage: React.FC = () => {
       try {
         setLoading(true);
         if(!isPortfolioInitialized()) {
-            await initialPortfolioLoad();
+            await initialPortfolioLoad('main');
         }
-        const assetData = await getAssets(); // Fetches from /portfolio/status
+  const assetData = await getAssets('main');
         
         setAllAssetsForSunburst(assetData); // Sunburst can include cash if it's a holding
 

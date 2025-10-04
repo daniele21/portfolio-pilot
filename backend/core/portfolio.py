@@ -1,39 +1,86 @@
 from collections import defaultdict
 from datetime import datetime
 import pandas as pd
-import sqlite3
 from db.database import (
     aggregate_positions,
     get_ticker_history,
     save_ticker_data,
-    DATABASE_NAME
+    get_ticker_data,
 )
 from services import data_fetcher
 import time
 from threading import Lock
+from datetime import timezone, timedelta
+import os
 
-# --- In-memory cache for performance endpoints ---
-_PERFORMANCE_CACHE = {}
-_TICKER_PERFORMANCE_CACHE = {}
-_MULTI_TICKER_PERFORMANCE_CACHE = {}
-_CACHE_TTL = 60  # seconds
+# --- In-memory day-reset caches (expire at next UTC midnight) ---
+# Caches store entries as: key -> (expiry_ts_utc, data)
 _CACHE_LOCK = Lock()
+# per-portfolio performance cache: key=portfolio_name
+_PERFORMANCE_CACHE: dict = {}
+# per-portfolio+ticker performance cache: key=(portfolio_name, ticker, start_date_str)
+_TICKER_PERFORMANCE_CACHE: dict = {}
+# multi-ticker per-portfolio cache: key=(portfolio_name, tuple(sorted(tickers)), start_date_str)
+_MULTI_TICKER_PERFORMANCE_CACHE: dict = {}
+
+
+def _next_utc_midnight_ts() -> float:
+    now = datetime.now(timezone.utc)
+    next_midnight = datetime(year=now.year, month=now.month, day=now.day, tzinfo=timezone.utc) + timedelta(days=1)
+    return next_midnight.timestamp()
+
+
+def _get_cache_entry(cache: dict, key):
+    entry = cache.get(key)
+    if not entry:
+        return None
+    expiry_ts, data = entry
+    if datetime.now(timezone.utc).timestamp() < expiry_ts:
+        return data
+    # expired
+    try:
+        cache.pop(key, None)
+    except Exception:
+        pass
+    return None
+
+
+def _set_cache_entry(cache: dict, key, data):
+    expiry_ts = _next_utc_midnight_ts()
+    cache[key] = (expiry_ts, data)
 
 
 # Helper to clear caches (call after transaction changes)
 def clear_performance_caches(portfolio_name=None, tickers=None):
     with _CACHE_LOCK:
         if portfolio_name:
-            _PERFORMANCE_CACHE.pop(portfolio_name, None)
-            _MULTI_TICKER_PERFORMANCE_CACHE.pop(portfolio_name, None)
-            if tickers:
-                for t in tickers:
-                    _TICKER_PERFORMANCE_CACHE.pop((portfolio_name, t), None)
-            else:
-                # Remove all tickers for this portfolio
-                keys_to_remove = [k for k in _TICKER_PERFORMANCE_CACHE if k[0] == portfolio_name]
-                for k in keys_to_remove:
-                    _TICKER_PERFORMANCE_CACHE.pop(k, None)
+            # remove portfolio-level performance
+            try:
+                _PERFORMANCE_CACHE.pop(portfolio_name, None)
+            except Exception:
+                pass
+            # remove multi-ticker entries for this portfolio
+            try:
+                keys_multi = [k for k in list(_MULTI_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == portfolio_name]
+                for k in keys_multi:
+                    _MULTI_TICKER_PERFORMANCE_CACHE.pop(k, None)
+            except Exception:
+                pass
+            # remove ticker-level entries for this portfolio
+            try:
+                if tickers:
+                    # remove specific tickers
+                    for t in tickers:
+                        keys_to_remove = [k for k in list(_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == portfolio_name and k[1] == t]
+                        for k in keys_to_remove:
+                            _TICKER_PERFORMANCE_CACHE.pop(k, None)
+                else:
+                    # remove all tickers for this portfolio
+                    keys_to_remove = [k for k in list(_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == portfolio_name]
+                    for k in keys_to_remove:
+                        _TICKER_PERFORMANCE_CACHE.pop(k, None)
+            except Exception:
+                pass
         else:
             _PERFORMANCE_CACHE.clear()
             _TICKER_PERFORMANCE_CACHE.clear()
@@ -42,27 +89,31 @@ def clear_performance_caches(portfolio_name=None, tickers=None):
 
 # --- Caching wrappers ---
 def get_cached_portfolio_performance(portfolio_name):
-    now = time.time()
     with _CACHE_LOCK:
-        entry = _PERFORMANCE_CACHE.get(portfolio_name)
-        if entry and now - entry['ts'] < _CACHE_TTL:
-            return entry['data']
+        cached = _get_cache_entry(_PERFORMANCE_CACHE, portfolio_name)
+        if cached is not None:
+            return cached
     data = compute_portfolio_performance(portfolio_name, _skip_cache=True)
     with _CACHE_LOCK:
-        _PERFORMANCE_CACHE[portfolio_name] = {'data': data, 'ts': now}
+        try:
+            _set_cache_entry(_PERFORMANCE_CACHE, portfolio_name, data)
+        except Exception:
+            pass
     return data
 
 
 def get_cached_ticker_performance(portfolio_name, ticker, start_date=None):
-    now = time.time()
     key = (portfolio_name, ticker, str(start_date) if start_date else '')
     with _CACHE_LOCK:
-        entry = _TICKER_PERFORMANCE_CACHE.get(key)
-        if entry and now - entry['ts'] < _CACHE_TTL:
-            return entry['data']
+        cached = _get_cache_entry(_TICKER_PERFORMANCE_CACHE, key)
+        if cached is not None:
+            return cached
     data = compute_ticker_performance(portfolio_name, ticker, start_date, _skip_cache=True)
     with _CACHE_LOCK:
-        _TICKER_PERFORMANCE_CACHE[key] = {'data': data, 'ts': now}
+        try:
+            _set_cache_entry(_TICKER_PERFORMANCE_CACHE, key, data)
+        except Exception:
+            pass
     return data
 
 
@@ -86,17 +137,18 @@ def get_portfolio_status(portfolio_name):
     positions = aggregate_positions(txs)
     holdings = []
     total_value = 0.0
-    conn = sqlite3.connect(DATABASE_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
     for ticker, qty in positions.items():
         if qty == 0:
             continue
-        # Get latest price from ticker_info
-        cursor.execute('SELECT regularMarketPrice, shortName FROM ticker_info WHERE ticker = ?', (ticker,))
-        row = cursor.fetchone()
-        price = row['regularMarketPrice'] if row and row['regularMarketPrice'] is not None else 0
-        name = row['shortName'] if row and row['shortName'] else ticker
+        # Get latest price from ticker_info (Firestore)
+        try:
+            data, _ = get_ticker_data(ticker)
+            info = (data or {}).get('info', {})
+            price = info.get('regularMarketPrice') or 0
+            name = info.get('shortName') or ticker
+        except Exception:
+            price = 0
+            name = ticker
         value = price * qty
         total_value += value
         holdings.append({
@@ -106,7 +158,6 @@ def get_portfolio_status(portfolio_name):
             "price": price,
             "value": value,
         })
-    conn.close()
     return {"holdings": holdings, "total_value": total_value}
 
 
@@ -207,9 +258,16 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False):
             cost = txs_ticker[txs_ticker['quantity'] > 0]
             cost_sum = (cost['quantity'] * cost['price']).sum() if not cost.empty else 0.0
             total_cost += cost_sum
-            price = ticker_histories.get(ticker, pd.Series()).get(date, None)
-            if price is None:
-                price = ticker_histories.get(ticker, pd.Series()).loc[:date].ffill().iloc[-1] if not ticker_histories.get(ticker, pd.Series()).loc[:date].empty else 0.0
+            series = ticker_histories.get(ticker, pd.Series())
+            price = series.get(date, None)
+            # Treat NaN as missing: try forward-fill, otherwise default to 0.0
+            if price is None or pd.isna(price):
+                try:
+                    ffilled = series.loc[:date].ffill()
+                    last = ffilled.iloc[-1] if not ffilled.empty else None
+                    price = last if (last is not None and not pd.isna(last)) else 0.0
+                except Exception:
+                    price = 0.0
             abs_value = qty * (price if price is not None else 0.0)
             net_value = abs_value - cost_sum
             total_value += net_value
@@ -276,9 +334,15 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
         # Cost basis: sum of all buy transactions up to this date
         cost = df_txs[(df_txs['date'] <= date) & (df_txs['quantity'] > 0)]
         cost_sum = (cost['quantity'] * cost['price']).sum() if not cost.empty else 0.0
-        price = df_hist['close'].get(date, None)
-        if price is None:
-            price = df_hist['close'].loc[:date].ffill().iloc[-1] if not df_hist['close'].loc[:date].empty else 0.0
+        series = df_hist['close']
+        price = series.get(date, None)
+        if price is None or pd.isna(price):
+            try:
+                ffilled = series.loc[:date].ffill()
+                last = ffilled.iloc[-1] if not ffilled.empty else None
+                price = last if (last is not None and not pd.isna(last)) else 0.0
+            except Exception:
+                price = 0.0
         abs_value = qty * (price if price is not None else 0.0)
         net_value = abs_value - cost_sum
         pct = (net_value / cost_sum * 100) if cost_sum else 0.0
@@ -328,9 +392,15 @@ def compute_benchmark_performance(ticker):
     values = []
     first_value = None
     for date in all_dates:
-        price = df_hist['close'].get(date, None)
-        if price is None:
-            price = df_hist['close'].loc[:date].ffill().iloc[-1] if not df_hist['close'].loc[:date].empty else 0.0
+        series = df_hist['close']
+        price = series.get(date, None)
+        if price is None or pd.isna(price):
+            try:
+                ffilled = series.loc[:date].ffill()
+                last = ffilled.iloc[-1] if not ffilled.empty else None
+                price = last if (last is not None and not pd.isna(last)) else 0.0
+            except Exception:
+                price = 0.0
         abs_value = price if price is not None else 0.0
         if first_value is None and abs_value != 0.0:
             first_value = abs_value
@@ -348,18 +418,19 @@ def get_overall_asset_allocation(portfolio_name):
     txs = get_transactions(portfolio_name)
     positions = aggregate_positions(txs)
     allocation = []
-    conn = sqlite3.connect(DATABASE_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
     total_value = 0.0
     temp_alloc = []
     for ticker, qty in positions.items():
         if qty == 0:
             continue
-        cursor.execute('SELECT regularMarketPrice, shortName FROM ticker_info WHERE ticker = ?', (ticker,))
-        row = cursor.fetchone()
-        price = row['regularMarketPrice'] if row and row['regularMarketPrice'] is not None else 0
-        name = row['shortName'] if row and row['shortName'] else ticker
+        try:
+            data, _ = get_ticker_data(ticker)
+            info = (data or {}).get('info', {})
+            price = info.get('regularMarketPrice') or 0
+            name = info.get('shortName') or ticker
+        except Exception:
+            price = 0
+            name = ticker
         value = price * qty
         total_value += value
         temp_alloc.append({
@@ -373,7 +444,6 @@ def get_overall_asset_allocation(portfolio_name):
         allocation_pct = (item['value'] / total_value * 100) if total_value else 0.0
         item['allocation_pct'] = allocation_pct
         allocation.append(item)
-    conn.close()
     return allocation
 
 
@@ -386,18 +456,19 @@ def get_asset_allocation_by_quote_type(portfolio_name):
     txs = get_transactions(portfolio_name)
     positions = aggregate_positions(txs)
     allocation = {}
-    conn = sqlite3.connect(DATABASE_NAME)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
     total_value = 0.0
     temp = {}
     for ticker, qty in positions.items():
         if qty == 0:
             continue
-        cursor.execute('SELECT regularMarketPrice, quoteType FROM ticker_info WHERE ticker = ?', (ticker,))
-        row = cursor.fetchone()
-        price = row['regularMarketPrice'] if row and row['regularMarketPrice'] is not None else 0
-        quote_type = row['quoteType'] if row and row['quoteType'] else 'Unknown'
+        try:
+            data, _ = get_ticker_data(ticker)
+            info = (data or {}).get('info', {})
+            price = info.get('regularMarketPrice') or 0
+            quote_type = info.get('quoteType') or 'Unknown'
+        except Exception:
+            price = 0
+            quote_type = 'Unknown'
         value = price * qty
         total_value += value
         if quote_type not in temp:
@@ -406,7 +477,6 @@ def get_asset_allocation_by_quote_type(portfolio_name):
     # Now calculate allocation percentage for each quoteType
     for quote_type, value in temp.items():
         allocation[quote_type] = (value / total_value * 100) if total_value else 0.0
-    conn.close()
     return allocation
 
 
@@ -488,16 +558,16 @@ def compute_returns_since(portfolio_name, start_date):
         start_val = qty_start * (price_start if price_start is not None else 0.0)
         end_val = qty_end * (price_end if price_end is not None else 0.0)
         ticker_return = ((end_val - start_val) / start_val * 100) if start_val else 0.0
-        # Get ticker name from ticker_info
-        import sqlite3
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
-        cursor.execute('SELECT shortName, ticker FROM ticker_info WHERE ticker = ?', (ticker,))
-        row = cursor.fetchone()
-        ticker_name = row[0] if row and row[0] else ticker
-        ticker = row[1] if row and row[1] else ticker
-        conn.close()
-        ticker_returns[ticker] = {
+        # Get ticker name from ticker_info (Firestore)
+        try:
+            data, _ = get_ticker_data(ticker)
+            info = (data or {}).get('info', {})
+            ticker_name = info.get('shortName') or ticker
+            norm_ticker = info.get('ticker') or ticker
+        except Exception:
+            ticker_name = ticker
+            norm_ticker = ticker
+        ticker_returns[norm_ticker] = {
             'ticker_name': ticker_name,
             'start_value': start_val,
             'end_value': end_val,
@@ -810,4 +880,158 @@ def compute_ticker_volatility_1d(portfolio_name):
         returns = df['pct'] / 100.0
         result[ticker] = compute_volatility(returns, window=1)
     return result
+
+
+def get_six_month_returns(portfolio_name):
+    """
+    Convenience helper to compute returns for the last ~182 days (~6 months).
+    Returns the same structure as other period helpers (compute_returns_since).
+    """
+    import pandas as pd
+    today = pd.Timestamp.today().normalize()
+    six_months_ago = today - pd.Timedelta(days=182)
+    return compute_returns_since(portfolio_name, six_months_ago.strftime('%Y-%m-%d'))
+
+
+def compute_portfolio_volatility_for_period(portfolio_name, days):
+    """
+    Compute annualized volatility for the given lookback period (in days).
+    Returns a float (annualized volatility) computed on the returns inside the lookback window.
+    """
+    import pandas as pd
+    perf = compute_portfolio_performance(portfolio_name)
+    if not perf or len(perf) < 2:
+        return float('nan')
+    df = pd.DataFrame(perf)
+    if 'pct' not in df.columns:
+        return float('nan')
+    df['date'] = pd.to_datetime(df['date'])
+    # Use the last `days` from available data
+    cutoff = df['date'].max() - pd.Timedelta(days=days)
+    window_df = df[df['date'] > cutoff]
+    if window_df.empty or len(window_df) < 2:
+        return float('nan')
+    returns = window_df['pct'] / 100.0
+    return compute_volatility(returns, window=None)
+
+
+def compute_ticker_volatility_for_period(portfolio_name, days):
+    """
+    Compute annualized volatility for each ticker using a lookback in days.
+    Returns dict {ticker: volatility}
+    """
+    from db.database import get_transactions
+    import pandas as pd
+    txs = get_transactions(portfolio_name)
+    if not txs:
+        return {}
+    df_txs = pd.DataFrame(txs)
+    if df_txs.empty or 'ticker' not in df_txs.columns:
+        return {}
+    tickers = df_txs['ticker'].unique()
+    result = {}
+    for ticker in tickers:
+        perf = compute_ticker_performance(portfolio_name, ticker)
+        if not perf or len(perf) < 2:
+            result[ticker] = float('nan')
+            continue
+        df = pd.DataFrame(perf)
+        df['date'] = pd.to_datetime(df['date'])
+        cutoff = df['date'].max() - pd.Timedelta(days=days)
+        window_df = df[df['date'] > cutoff]
+        if window_df.empty or 'pct' not in window_df.columns or len(window_df) < 2:
+            result[ticker] = float('nan')
+            continue
+        returns = window_df['pct'] / 100.0
+        result[ticker] = compute_volatility(returns, window=None)
+    return result
+
+
+def get_asset_allocation_by_region(portfolio_name):
+    """
+    Returns a dict: {region: allocation_percentage, ...} for all tickers in the portfolio.
+    Uses the `region` column from `ticker_info` when present; falls back to 'Unknown'.
+    """
+    from db.database import get_transactions  # Local import
+    txs = get_transactions(portfolio_name)
+    positions = aggregate_positions(txs)
+    allocation = {}
+    total_value = 0.0
+    temp = {}
+    for ticker, qty in positions.items():
+        if qty == 0:
+            continue
+        try:
+            data, _ = get_ticker_data(ticker)
+            info = (data or {}).get('info', {})
+            price = info.get('regularMarketPrice') or 0
+            region = info.get('region') or 'Unknown'
+        except Exception:
+            price = 0
+            region = 'Unknown'
+        value = price * qty
+        total_value += value
+        temp[region] = temp.get(region, 0.0) + value
+    for region, value in temp.items():
+        allocation[region] = (value / total_value * 100) if total_value else 0.0
+    return allocation
+
+
+def _compute_max_drawdown_from_series(values):
+    """Compute maximum drawdown from a list/series of absolute portfolio values.
+    Returns a float (fraction, e.g. 0.2 for 20% max drawdown).
+    """
+    import pandas as pd
+    if not values:
+        return 0.0
+    s = pd.Series(values).astype(float)
+    if s.empty:
+        return 0.0
+    peak = s.cummax()
+    drawdown = (peak - s) / peak
+    return float(drawdown.max()) if not drawdown.empty else 0.0
+
+
+def evaluate_portfolio_alerts(portfolio_name, thresholds=None):
+    """
+    Evaluate portfolio alerts using provided thresholds. Returns a list of triggered alerts.
+
+    thresholds is a dict that can contain:
+      - volatility: {"30d": pct_value, "90d": pct_value, "1y": pct_value} (pct as decimal, e.g. 0.3 for 30%)
+      - weight_pct: float (e.g. 0.25 for 25%)
+      - drawdown_pct: float (e.g. 0.2 for 20%)
+
+    Example return:
+      [{"type": "volatility", "ticker": null, "period": "30d", "value": 0.32, "threshold": 0.3}, ...]
+    """
+    import pandas as pd
+    if thresholds is None:
+        thresholds = {}
+    alerts = []
+    # 1) Volatility checks (portfolio-level and per-ticker if requested)
+    vol_cfg = thresholds.get('volatility', {})
+    for label, days in (('30d', 30), ('90d', 90), ('1y', 365)):
+        if label in vol_cfg:
+            thr = vol_cfg[label]
+            vol = compute_portfolio_volatility_for_period(portfolio_name, days)
+            if isinstance(vol, float) and not pd.isna(vol) and vol > thr:
+                alerts.append({'type': 'volatility', 'scope': 'portfolio', 'period': label, 'value': vol, 'threshold': thr})
+    # 2) Weight threshold per asset
+    weight_thr = thresholds.get('weight_pct')
+    if weight_thr is not None:
+        alloc = get_overall_asset_allocation(portfolio_name)
+        for item in alloc:
+            if item.get('allocation_pct', 0) / 100.0 > weight_thr:
+                alerts.append({'type': 'weight', 'ticker': item.get('ticker'), 'value': item.get('allocation_pct') / 100.0, 'threshold': weight_thr})
+    # 3) Drawdown check
+    drawdown_thr = thresholds.get('drawdown_pct')
+    if drawdown_thr is not None:
+        perf = compute_portfolio_performance(portfolio_name)
+        if perf:
+            abs_values = [p.get('abs_value', 0.0) for p in perf]
+            mdd = _compute_max_drawdown_from_series(abs_values)
+            if mdd > drawdown_thr:
+                alerts.append({'type': 'drawdown', 'value': mdd, 'threshold': drawdown_thr})
+
+    return alerts
 

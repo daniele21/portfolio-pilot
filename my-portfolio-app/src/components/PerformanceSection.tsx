@@ -1,7 +1,5 @@
 import React from 'react';
-import { Listbox, Transition } from '@headlessui/react';
 import { PresentationChartLineIcon } from '@heroicons/react/24/outline';
-import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
 import PerformanceChart from '../components/PerformanceChart';
 import DateRangePicker from '../components/DateRangePicker';
 import type { HistoricalDataPoint } from '../types';
@@ -55,7 +53,6 @@ const GenericPerformanceSection: React.FC<GenericPerfSectionProps> = ({
   maxDate,
   onSetYTD,
   loading,
-  notEnoughDataMessage,
   finalValue,
   selector
 }) => {

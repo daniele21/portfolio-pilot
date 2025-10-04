@@ -1,15 +1,16 @@
 
 import { GoogleGenAI, GenerateContentResponse, GroundingChunk } from "@google/genai";
 import { GEMINI_MODEL_TEXT } from '../constants';
-import { Asset } from "../types"; // StandardizedMovement, ProcessMovementsResult removed
+import type { Asset } from "../types"; // Only need type
 
-const API_KEY = process.env.API_KEY;
+// Prefer Vite-style env variable (define VITE_GEMINI_API_KEY in .env)
+const API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || (window as any)?.API_KEY || undefined;
 
 if (!API_KEY) {
-  console.warn("API_KEY for Gemini is not set. AI Copilot and other AI features may not function.");
+  console.warn("Gemini API key (VITE_GEMINI_API_KEY) is not set. AI features will be disabled.");
 }
 
-const ai = new GoogleGenAI({ apiKey: API_KEY! }); 
+const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null; 
 
 interface AiResponse {
   text: string;
@@ -17,13 +18,23 @@ interface AiResponse {
 }
 
 const safeGenerateContent = async (modelConfig: any): Promise<AiResponse> => {
-    if (!API_KEY) {
+    if (!API_KEY || !ai) {
         return { text: "AI features are disabled. API key is missing." };
     }
     try {
         const response: GenerateContentResponse = await ai.models.generateContent(modelConfig);
-        const text = response.text;
-        const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+        // Some SDK versions expose a helper .text() while others aggregate into candidates parts
+        let text: string = '';
+        try {
+          if (typeof (response as any).text === 'function') {
+            text = (response as any).text() || '';
+          } else if (typeof (response as any).text === 'string') {
+            text = (response as any).text;
+          } else if (response.candidates?.[0]?.content?.parts?.length) {
+            text = response.candidates[0].content.parts.map((p: any) => p.text || '').join('\n');
+          }
+        } catch { /* ignore */ }
+        const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks as GroundingChunk[] | undefined;
         return { text, sources };
     } catch (error) {
         console.error("Gemini API error:", error);
