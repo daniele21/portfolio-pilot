@@ -4,13 +4,24 @@ import { Asset } from '../types';
 
 interface SunburstChartProps {
   assets: Asset[];
-  grouping?: 'overall' | 'quoteType';
+  grouping?: 'overall' | 'quoteType' | 'category' | 'risk';
   onEditCategory?: undefined;
 }
 
-const CATEGORY_COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#82Ca9D', '#FF5733', '#C70039', '#900C3F', '#581845'];
+const CATEGORY_COLORS = [
+  '#10b981', // emerald-500
+  '#3b82f6', // blue-500
+  '#8b5cf6', // violet-500
+  '#f59e0b', // amber-500
+  '#ef4444', // red-500
+  '#06b6d4', // cyan-500
+  '#84cc16', // lime-500
+  '#ec4899', // pink-500
+  '#6366f1', // indigo-500
+  '#f97316'  // orange-500
+];
 
-const getTotals = (assets: Asset[], grouping: 'overall' | 'quoteType') => {
+const getTotals = (assets: Asset[], grouping: 'overall' | 'quoteType' | 'category' | 'risk') => {
   if (grouping === 'overall') {
     // For overall, each asset is a slice (not a single group)
     return assets.map(asset => ({
@@ -18,19 +29,23 @@ const getTotals = (assets: Asset[], grouping: 'overall' | 'quoteType') => {
       value: asset.value,
       assetIds: [asset.id],
     }));
-  } else {
-    // For quoteType, group by asset.name (which is quoteType in this case)
-    const totals: Record<string, { value: number; assetIds: string[] }> = {};
-    assets.forEach(asset => {
-      const group = asset.name || asset.symbol || asset.id || 'Unknown';
-      if (!totals[group]) {
-        totals[group] = { value: 0, assetIds: [] };
-      }
-      totals[group].value += asset.value;
-      totals[group].assetIds.push(asset.id);
-    });
-    return Object.entries(totals).map(([group, { value, assetIds }]) => ({ group, value, assetIds }));
   }
+
+  const totals: Record<string, { value: number; assetIds: string[] }> = {};
+  assets.forEach(asset => {
+    let groupKey = 'Unknown';
+    if (grouping === 'quoteType') {
+      groupKey = asset.name || asset.symbol || asset.id || 'Unknown';
+    } else if (grouping === 'category') {
+      groupKey = (asset.category as string) || (asset.asset_type as string) || 'Uncategorized';
+    } else if (grouping === 'risk') {
+      groupKey = (asset.risk as string) || 'Unknown';
+    }
+    if (!totals[groupKey]) totals[groupKey] = { value: 0, assetIds: [] };
+    totals[groupKey].value += asset.value || 0;
+    if (asset.id && !totals[groupKey].assetIds.includes(asset.id)) totals[groupKey].assetIds.push(asset.id);
+  });
+  return Object.entries(totals).map(([group, { value, assetIds }]) => ({ group, value, assetIds }));
 };
 
 const SunburstChart: React.FC<SunburstChartProps> = ({ assets, grouping = 'overall' }) => {
@@ -42,38 +57,94 @@ const SunburstChart: React.FC<SunburstChartProps> = ({ assets, grouping = 'overa
     return <p className="text-center text-gray-400 py-10">No asset data available for chart. Please upload movements.</p>;
   }
 
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload.length) {
+      const data = payload[0];
+      const percentage = totalValue > 0 ? ((data.value / totalValue) * 100).toFixed(1) : 0;
+      return (
+        <div className="bg-gray-900/95 backdrop-blur-sm border border-white/20 rounded-lg p-3 shadow-xl">
+          <p className="text-white font-semibold text-sm mb-1">{data.name}</p>
+          <p className="text-emerald-400 font-medium">
+            ${data.value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+          </p>
+          <p className="text-slate-300 text-xs">{percentage}% of portfolio</p>
+        </div>
+      );
+    }
+    return null;
+  };
+
   return (
-    <div className="bg-gray-800 p-6 rounded-xl shadow-2xl">
-      <h3 className="text-xl font-semibold text-white mb-4">
-        Asset Allocation {grouping === 'overall' ? '' : 'by Quote Type'}
-      </h3>
-      <ResponsiveContainer width="100%" height={350}>
-        <PieChart>
-          <Tooltip
-            formatter={(value: number, name: string) => {
-              const percentage = totalValue > 0 ? ((value / totalValue) * 100).toFixed(2) : 0;
-              return [`${value.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} (${percentage}%)`, name];
-            }}
-            contentStyle={{ backgroundColor: 'rgba(31, 41, 55, 0.9)', border: '1px solid #4B5563', borderRadius: '0.5rem' }}
-            labelStyle={{ color: '#E5E7EB' }}
-            itemStyle={{ color: '#E5E7EB' }}
-          />
-          <Pie
-            data={data}
-            dataKey="value"
-            nameKey="group"
-            cx="50%"
-            cy="50%"
-            outerRadius="80%"
-            fill="#8884d8"
-            label={({ group, percent }) => percent > 0.03 ? `${group} (${(percent * 100).toFixed(0)}%)` : ''}
-          >
-            {data.map((_, index) => (
-              <Cell key={`cell-group-${index}`} fill={CATEGORY_COLORS[index % CATEGORY_COLORS.length]} />
-            ))}
-          </Pie>
-        </PieChart>
-      </ResponsiveContainer>
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <h3 className="text-lg font-bold text-white">
+          {grouping === 'overall' ? 'Asset Distribution' : 'Category Distribution'}
+        </h3>
+        <div className="text-sm text-slate-400">
+          Total: ${totalValue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+        </div>
+      </div>
+      
+      <div className="flex flex-col lg:flex-row gap-6">
+        <div className="flex-1">
+          <ResponsiveContainer width="100%" height={400}>
+            <PieChart>
+              <Tooltip content={<CustomTooltip />} />
+              <Pie
+                data={data}
+                dataKey="value"
+                nameKey="group"
+                cx="50%"
+                cy="50%"
+                outerRadius="85%"
+                innerRadius="40%"
+                fill="#8884d8"
+                stroke="rgba(255,255,255,0.1)"
+                strokeWidth={2}
+                label={({ percent }) => percent > 0.05 ? `${(percent * 100).toFixed(0)}%` : ''}
+                labelLine={false}
+              >
+                {data.map((_, index) => (
+                  <Cell 
+                    key={`cell-group-${index}`} 
+                    fill={CATEGORY_COLORS[index % CATEGORY_COLORS.length]}
+                    className="hover:opacity-80 transition-opacity cursor-pointer" 
+                  />
+                ))}
+              </Pie>
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        
+        {/* Legend */}
+        <div className="lg:w-64">
+          <h4 className="text-sm font-semibold text-slate-200 mb-3">Legend</h4>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {data.map((item, index) => {
+              const percentage = totalValue > 0 ? ((item.value / totalValue) * 100).toFixed(1) : 0;
+              return (
+                <div key={item.group} className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 transition-colors">
+                  <div className="flex items-center space-x-3 flex-1 min-w-0">
+                    <div 
+                      className="w-3 h-3 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: CATEGORY_COLORS[index % CATEGORY_COLORS.length] }}
+                    />
+                    <span className="text-sm text-white truncate font-medium">
+                      {item.group}
+                    </span>
+                  </div>
+                  <div className="text-right flex-shrink-0 ml-2">
+                    <div className="text-xs font-medium text-slate-200">{percentage}%</div>
+                    <div className="text-xs text-slate-400">
+                      ${item.value.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

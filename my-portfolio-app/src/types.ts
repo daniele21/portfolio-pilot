@@ -34,6 +34,8 @@ export interface Asset {
   category: string; // e.g., Equity, Bond, Cash
   region: string; // e.g., North America, Europe, Asia
   sector?: string; // e.g., Technology, Healthcare (for equities)
+  asset_type?: string; // optional alias for category coming from backend (asset_type)
+  risk?: string; // optional qualitative risk label stored in backend holdings metadata
   symbol?: string;
   quantity?: number; // Number of shares/units held
   averageCostPrice?: number | null; // Average cost price per share/unit - may not be available from backend

@@ -480,6 +480,178 @@ def get_asset_allocation_by_quote_type(portfolio_name):
     return allocation
 
 
+def get_asset_allocation_by_category_and_risk(portfolio_name):
+    """
+    Returns allocation grouped by user-defined 'category' and 'risk' fields stored
+    in the `portfolio_holdings` Firestore document for the portfolio (if present).
+
+    The returned structure is a dict with keys:
+      - "total_value": float
+      - "by_category": { category: { value: float, pct: float, tickers: [ticker,...] }, ... }
+      - "by_risk": { risk: { value: float, pct: float, tickers: [ticker,...] }, ... }
+
+    If holdings are not present in Firestore this function returns empty groupings
+    (but does not try to compute live holdings). Percentages are 0 when total_value is 0.
+    """
+    # Local import to avoid circular imports
+    try:
+        from db.portfolios import get_portfolio_status_saved
+    except Exception:
+        # If import fails, return empty structure
+        return {"total_value": 0.0, "by_category": {}, "by_risk": {}}
+
+    try:
+        status_doc, _, _ = get_portfolio_status_saved(portfolio_name)
+        holdings = status_doc.get("holdings", []) or []
+        # Compute total_value from holdings to ensure percentages are
+        # derived from the actual summed holdings values. Use the saved
+        # `total_value` only as a fallback when holdings are empty or
+        # when parsing fails.
+        computed_total = 0.0
+        for h in holdings:
+            try:
+                computed_total += float(h.get("value", 0) or 0.0)
+            except Exception:
+                continue
+        total_value = float(computed_total) if computed_total else float(status_doc.get("total_value", 0) or 0.0)
+    except Exception:
+        return {"total_value": 0.0, "by_category": {}, "by_risk": {}}
+
+    by_category = {}
+    by_risk = {}
+
+    # Group values by category and risk
+    for h in holdings:
+        try:
+            ticker = h.get("ticker") or h.get("ticker_symbol") or None
+            value = float(h.get("value", 0) or 0.0)
+            # Use only the explicit 'category' field from saved holdings.
+            # Do NOT fall back to 'asset_type' here because that mixes
+            # different classification schemes and can produce unexpected
+            # category keys (e.g. asset-type codes like 'aaa', 'bbb').
+            category = h.get("category") if h.get("category") is not None else "Uncategorized"
+            risk = h.get("risk") or "Unknown"
+        except Exception:
+            continue
+
+        # Category
+        if category not in by_category:
+            by_category[category] = {"value": 0.0, "tickers": []}
+        by_category[category]["value"] += value
+        if ticker and ticker not in by_category[category]["tickers"]:
+            by_category[category]["tickers"].append(ticker)
+
+        # Risk
+        if risk not in by_risk:
+            by_risk[risk] = {"value": 0.0, "tickers": []}
+        by_risk[risk]["value"] += value
+        if ticker and ticker not in by_risk[risk]["tickers"]:
+            by_risk[risk]["tickers"].append(ticker)
+
+    # Convert values to percentages
+    def _attach_pct(group_map):
+        for k, v in group_map.items():
+            val = float(v.get("value", 0) or 0.0)
+            pct = (val / total_value * 100.0) if total_value else 0.0
+            v["pct"] = pct
+    _attach_pct(by_category)
+    _attach_pct(by_risk)
+
+    return {"total_value": total_value, "by_category": by_category, "by_risk": by_risk}
+
+
+def get_asset_allocation_by_category(portfolio_name):
+    """
+    Return allocation grouped by category only.
+    Returns { 'total_value': float, 'by_category': { category: { value, pct, tickers }, ... } }
+    """
+    try:
+        full = get_asset_allocation_by_category_and_risk(portfolio_name)
+        return { 'total_value': full.get('total_value', 0.0), 'by_category': full.get('by_category', {}) }
+    except Exception:
+        return { 'total_value': 0.0, 'by_category': {} }
+
+
+def get_asset_allocation_by_risk(portfolio_name):
+    """
+    Return allocation grouped by risk only.
+    Returns { 'total_value': float, 'by_risk': { risk: { value, pct, tickers }, ... } }
+    """
+    try:
+        full = get_asset_allocation_by_category_and_risk(portfolio_name)
+        return { 'total_value': full.get('total_value', 0.0), 'by_risk': full.get('by_risk', {}) }
+    except Exception:
+        return { 'total_value': 0.0, 'by_risk': {} }
+
+
+def get_asset_allocation_by_asset_type_and_total(portfolio_name):
+    """
+    Returns allocation grouped by the user-specified 'asset_type' field stored
+    in the `portfolio_holdings` Firestore document for the portfolio (if present).
+
+    Returned structure:
+      { 'total_value': float, 'by_asset_type': { asset_type: { value: float, pct: float, tickers: [...] }, ... } }
+
+    If holdings are not present this returns empty groupings.
+    Percentages are computed against the summed holdings values (computed_total).
+    """
+    try:
+        from db.portfolios import get_portfolio_status_saved
+    except Exception:
+        return { 'total_value': 0.0, 'by_asset_type': {} }
+
+    try:
+        status_doc, _, _ = get_portfolio_status_saved(portfolio_name)
+        holdings = status_doc.get('holdings', []) or []
+        # compute total from holdings values
+        computed_total = 0.0
+        for h in holdings:
+            try:
+                computed_total += float(h.get('value', 0) or 0.0)
+            except Exception:
+                continue
+        total_value = float(computed_total) if computed_total else float(status_doc.get('total_value', 0) or 0.0)
+    except Exception:
+        return { 'total_value': 0.0, 'by_asset_type': {} }
+
+    by_asset_type = {}
+    for h in holdings:
+        try:
+            ticker = h.get('ticker') or h.get('ticker_symbol') or None
+            value = float(h.get('value', 0) or 0.0)
+            asset_type = h.get('asset_type') or 'Unknown'
+        except Exception:
+            continue
+
+        if asset_type not in by_asset_type:
+            by_asset_type[asset_type] = { 'value': 0.0, 'tickers': [] }
+        by_asset_type[asset_type]['value'] += value
+        if ticker and ticker not in by_asset_type[asset_type]['tickers']:
+            by_asset_type[asset_type]['tickers'].append(ticker)
+
+    # attach pct
+    for k, v in by_asset_type.items():
+        try:
+            val = float(v.get('value', 0) or 0.0)
+            pct = (val / total_value * 100.0) if total_value else 0.0
+            v['pct'] = pct
+        except Exception:
+            v['pct'] = 0.0
+
+    return { 'total_value': total_value, 'by_asset_type': by_asset_type }
+
+
+def get_asset_allocation_by_asset_type(portfolio_name):
+    """
+    Thin wrapper that returns only the by_asset_type mapping with total_value.
+    """
+    try:
+        full = get_asset_allocation_by_asset_type_and_total(portfolio_name)
+        return { 'total_value': full.get('total_value', 0.0), 'by_asset_type': full.get('by_asset_type', {}) }
+    except Exception:
+        return { 'total_value': 0.0, 'by_asset_type': {} }
+
+
 def compute_returns_since(portfolio_name, start_date):
     """
     Compute the portfolio and per-ticker returns since a given start_date (YYYY-MM-DD).

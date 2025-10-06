@@ -10,13 +10,11 @@ import {
   fetchPortfolioPerformance
 } from '../../services/portfolioService';
 import PortfolioSelector from './components/PortfolioSelector';
+import AllocationPanel from './components/AllocationPanel';
 import TickerPerformanceSection from './components/TickerPerformanceSection';
-import ProjectOverview from './modules/ProjectOverview';
-import RiskAnalysis from './modules/RiskAnalysis';
-import AssetAllocationSummary from './modules/AssetAllocationSummary';
-import PerformanceChartSection from './modules/PerformanceChartSection';
 import { ChartBarIcon, CurrencyDollarIcon, ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
-import { ValueType } from '../../components/PerformanceSection';
+
+import GenericPerformanceSection, { ValueType } from '../../components/PerformanceSection';
 import { fetchBenchmarkPerformance } from '../../services/marketDataService';
 import { Listbox, Transition } from '@headlessui/react';
 import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
@@ -32,15 +30,13 @@ const SimpleHome: React.FC = () => {
   const { isLoggedIn, idToken } = useAuth();
   const [selectedPortfolio, setSelectedPortfolio] = React.useState<string | null>(null);
   const [maskPortfolioValue, setMaskPortfolioValue] = React.useState(true);
-  const [allocationView, setAllocationView] = React.useState<'overall' | 'quoteType' | 'category' | 'risk'>('overall');
+  const [allocationView, setAllocationView] = React.useState<'overall' | 'quoteType'>('overall');
   const [volatilityWindow, setVolatilityWindow] = React.useState<string>(VOLATILITY_PRESETS[0].value);
   
   // Performance section state
-  // Default the value type to 'Performance' view (pct_from_first) so the select shows "Performance" by default
-  const [performanceValueType, setPerformanceValueType] = React.useState<ValueType>('pct_from_first');
+  const [performanceValueType, setPerformanceValueType] = React.useState<ValueType>('abs_value');
   const [performanceDateRange, setPerformanceDateRange] = React.useState<{start: string; end: string} | null>(null);
   const [selectedTickers, setSelectedTickers] = React.useState<string[]>([]);
-  
   // Benchmarks
   const BENCHMARK_TICKERS = [
     { symbol: '^GSPC', name: 'S&P 500' },
@@ -118,17 +114,17 @@ const SimpleHome: React.FC = () => {
     enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
   });
 
-  // Derived performance metrics from historical series
+  // Derived performance metrics (returns and volatility) from historical series
   const performanceDerived = React.useMemo(() => {
     const data = Array.isArray(portfolioPerformance) ? portfolioPerformance : [];
     if (data.length === 0) return { latestAbs: null, latestNet: null, firstAbs: null, dailyReturns: [] };
-    
+    // Ensure sorted by date asc
     const sorted = [...data].sort((a: any, b: any) => (a.date > b.date ? 1 : a.date < b.date ? -1 : 0));
     const last = sorted[sorted.length - 1] as any;
     const first = sorted[0] as any;
     const latestAbs = last.abs_value ?? last.value ?? null;
     const latestNet = last.value !== undefined ? last.value : (latestAbs !== null && first && first.abs_value !== undefined ? latestAbs - (first.abs_value ?? 0) : null);
-    
+    // compute daily returns series using abs_value where available, otherwise value
     const dailyReturns: number[] = [];
     for (let i = 1; i < sorted.length; i++) {
       const prev = sorted[i - 1] as any;
@@ -141,6 +137,29 @@ const SimpleHome: React.FC = () => {
     }
     return { latestAbs, latestNet, firstAbs: first.abs_value ?? first.value ?? null, dailyReturns, series: sorted };
   }, [portfolioPerformance]);
+
+  // (returns are provided by backend; no client-side returns computation)
+
+  // compute annualized volatility from daily returns for a rolling window of nDays
+  const annualizedVolatility = React.useCallback((nDays: number) => {
+    const returns = performanceDerived.dailyReturns || [];
+    if (!returns || returns.length === 0) return null;
+    const slice = returns.slice(-nDays);
+    if (slice.length < 2) return null;
+    const mean = slice.reduce((a, b) => a + b, 0) / slice.length;
+    const variance = slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / (slice.length - 1);
+    const dailyStd = Math.sqrt(variance);
+    const annualized = dailyStd * Math.sqrt(252); // trading days
+    return annualized * 100; // percent
+  }, [performanceDerived]);
+
+  const derivedVolatility = React.useMemo(() => ({
+    '30': annualizedVolatility(30),
+    '90': annualizedVolatility(90),
+    '252': annualizedVolatility(252)
+  }), [annualizedVolatility]);
+
+  // Note: Removed kpiCards and returnsKpiCards as we're using a more professional tabular layout
 
   // For SunburstChart, convert allocationData to assets-like array for compatibility
   const allocationAssets = React.useMemo(() => {
@@ -160,24 +179,16 @@ const SimpleHome: React.FC = () => {
       }));
     } else {
       if (typeof allocationData.allocation !== 'object' || Array.isArray(allocationData.allocation)) return [];
-      return Object.entries(allocationData.allocation).map(([key, val]: [string, any]) => {
-        // The backend may return grouped allocations as either a number (pct)
-        // or an object like { value, pct, tickers }. Handle both shapes.
-        const isObj = val && typeof val === 'object' && ('pct' in val || 'value' in val);
-        const pct = isObj ? (typeof val.pct === 'number' ? val.pct : (val.value ?? 0)) : (typeof val === 'number' ? val : 0);
-        const value = isObj ? (typeof val.value === 'number' ? val.value : pct) : pct;
-        return {
-          id: key,
-          symbol: key,
-          name: key,
-          value: value,
-          quantity: 1,
-          allocation_pct: pct,
-          category: allocationView === 'quoteType' ? 'Type' : (allocationView === 'category' ? 'Category' : (allocationView === 'risk' ? 'Risk' : 'Group')),
-          region: 'Unknown',
-          meta: isObj ? val : undefined,
-        };
-      });
+      return Object.entries(allocationData.allocation).map(([quoteType, pct]: [string, any]) => ({
+        id: quoteType,
+        symbol: quoteType,
+        name: quoteType,
+        value: pct,
+        quantity: 1,
+        allocation_pct: pct,
+        category: 'Type',
+        region: 'Unknown',
+      }));
     }
   }, [allocationData, allocationView]);
 
@@ -233,6 +244,7 @@ const SimpleHome: React.FC = () => {
       await Promise.all(selectedBenchmarks.map(async (symbol) => {
         try {
           const perf = await fetchBenchmarkPerformance(symbol);
+          // Normalize date format and numeric fields
           let normalized: any[] = [];
           if (Array.isArray(perf)) {
             normalized = perf.map((pt: any) => ({
@@ -274,6 +286,7 @@ const SimpleHome: React.FC = () => {
 
   // Prepare benchmark series for chart
   const benchmarkSeries = React.useMemo(() => {
+    // Helper to filter benchmark data by selected performance date range
     const filterAndSort = (dataArr: any[]) => {
       if (!Array.isArray(dataArr)) return [];
       let arr = [...dataArr];
@@ -345,39 +358,19 @@ const SimpleHome: React.FC = () => {
 
   if (loading && !kpis) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex justify-center items-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-indigo-500 mx-auto"></div>
-          <p className="mt-4 text-xl text-gray-300">Loading Portfolio Dashboard...</p>
-        </div>
+      <div className="flex justify-center items-center h-full">
+        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-indigo-500"></div>
+        <p className="ml-4 text-xl text-gray-300">Loading Dashboard...</p>
       </div>
     );
   }
 
   if (error && !kpis) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex justify-center items-center">
-        <div className="text-center text-red-400 text-xl p-8">
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-6">
-            <h2 className="text-2xl font-bold mb-2">Error Loading Dashboard</h2>
-            <p>{String(error)}</p>
-          </div>
-        </div>
-      </div>
-    );
+    return <div className="text-center text-red-400 text-xl p-8">{String(error)}</div>;
   }
 
   if (!isLoggedIn && !loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex justify-center items-center">
-        <div className="text-center text-yellow-400 text-xl p-8">
-          <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-6">
-            <h2 className="text-2xl font-bold mb-2">Authentication Required</h2>
-            <p>Please sign in to access the portfolio dashboard.</p>
-          </div>
-        </div>
-      </div>
-    );
+    return <div className="text-center text-yellow-400 text-xl p-8">Please sign in to access the dashboard.</div>;
   }
 
   return (
@@ -396,7 +389,12 @@ const SimpleHome: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center space-x-4">
-              {/* control moved into ProjectOverview */}
+              <button
+                onClick={() => setMaskPortfolioValue(v => !v)}
+                className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-white text-sm font-medium transition-colors"
+              >
+                {maskPortfolioValue ? 'Show Values' : 'Hide Values'}
+              </button>
             </div>
           </div>
           
@@ -413,56 +411,141 @@ const SimpleHome: React.FC = () => {
 
         {selectedPortfolio && (
           <div className="space-y-8">
-            {/* Portfolio Summary Dashboard (modularized) */}
+            {/* Portfolio Summary Dashboard */}
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              <ProjectOverview
-                performanceDerived={performanceDerived}
-                maskPortfolioValue={maskPortfolioValue}
-                returnsKpis={returnsKpis}
-                kpis={kpis}
-                toggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
-              />
-
-              <RiskAnalysis
-                volatilityWindow={volatilityWindow}
-                volatilityValue={portfolioVolatility?.volatility}
-                setVolatilityWindow={setVolatilityWindow}
-                presets={VOLATILITY_PRESETS}
-              />
-
-              <AssetAllocationSummary
-                allocationAssets={allocationAssets}
-                allocationView={allocationView}
-                setAllocationView={setAllocationView}
-              />
-            </div>
-
-            {/* Performance Chart Section (modularized) */}
-            <div className="lg:col-span-4">
-              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+              {/* Portfolio Value & Performance */}
+              <div className="lg:col-span-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
                 <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-lg font-semibold text-white">Portfolio Performance</h2>
-                  <div className="flex items-center space-x-4">
-                    {benchmarksSelector}
+                  <h2 className="text-lg font-semibold text-white">Portfolio Overview</h2>
+                  <div className="text-xs text-slate-400 bg-slate-800/50 px-3 py-1 rounded-full">
+                    Last Updated: {new Date().toLocaleDateString()}
                   </div>
                 </div>
+                
+                <div className="space-y-6">
+                  {/* Portfolio Value */}
+                  <div className="border-b border-white/10 pb-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-300 text-sm font-medium">Total Portfolio Value</span>
+                      <div className="text-right">
+                        <div className="text-2xl font-bold text-white">
+                          {maskPortfolioValue ? '••••••••' : (
+                            performanceDerived.latestAbs !== null 
+                              ? `$${performanceDerived.latestAbs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : 'N/A'
+                          )}
+                        </div>
+                        {performanceDerived.latestNet !== null && (
+                          <div className={`text-sm font-medium ${performanceDerived.latestNet >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {performanceDerived.latestNet >= 0 ? '+' : ''}${performanceDerived.latestNet.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
 
-                <div className="bg-white/5 rounded-xl p-4">
-                  <PerformanceChartSection
-                    title="Portfolio Performance"
-                    valueType={performanceValueType}
-                    onValueTypeChange={setPerformanceValueType}
-                    data={filteredPerformanceData}
-                    series={combinedSeriesForChart}
-                    dateRange={performanceDateRange}
-                    onDateRangeChange={setPerformanceDateRange}
-                    minDate={performanceDateBounds.minDate}
-                    maxDate={performanceDateBounds.maxDate}
-                    onSetYTD={setPerformanceYTD}
-                    loading={false}
-                    finalValue={finalPerformanceValue}
-                  />
+                  {/* Performance Metrics */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {returnsKpis && Object.entries(returnsKpis).slice(0, 4).map(([period, data]: [string, any]) => {
+                      const returnPct = data?.portfolio?.return_pct;
+                      if (typeof returnPct !== 'number') return null;
+                      
+                      return (
+                        <div key={period} className="bg-white/5 rounded-lg p-3">
+                          <div className="text-xs text-slate-400 uppercase tracking-wide">
+                            {period.replace('_', ' ')}
+                          </div>
+                          <div className={`text-lg font-bold ${returnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(2)}%
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
+              </div>
+
+              {/* Risk Metrics */}
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+                <h2 className="text-lg font-semibold text-white mb-6">Risk Analysis</h2>
+                <div className="space-y-4">
+                  <div className="bg-white/5 rounded-lg p-4">
+                    <div className="text-xs text-slate-400 uppercase tracking-wide mb-2">
+                      Volatility ({VOLATILITY_PRESETS.find(opt => opt.value === volatilityWindow)?.label})
+                    </div>
+                    <div className="text-xl font-bold text-white">
+                      {portfolioVolatility?.volatility?.toFixed(2) ?? 'N/A'}%
+                    </div>
+                  </div>
+                  
+                  {/* Volatility selector */}
+                  <div className="space-y-2">
+                    <div className="text-xs text-slate-400 uppercase tracking-wide">Period</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {VOLATILITY_PRESETS.map(preset => (
+                        <button
+                          key={preset.value}
+                          onClick={() => setVolatilityWindow(preset.value)}
+                          className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                            volatilityWindow === preset.value
+                              ? 'bg-blue-500 text-white'
+                              : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Asset Allocation Summary */}
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+                <h2 className="text-lg font-semibold text-white mb-6">Asset Allocation</h2>
+                <div className="space-y-3">
+                  {allocationAssets.slice(0, 5).map((asset, index) => (
+                    <div key={asset.id} className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <div className={`w-3 h-3 rounded-full bg-gradient-to-r ${
+                          ['from-blue-400 to-blue-600', 'from-green-400 to-green-600', 'from-yellow-400 to-yellow-600', 'from-red-400 to-red-600', 'from-purple-400 to-purple-600'][index % 5]
+                        }`} />
+                        <span className="text-sm font-medium text-white">{asset.symbol}</span>
+                      </div>
+                      <span className="text-sm text-slate-300">{asset.allocation_pct?.toFixed(1)}%</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 pt-4 border-t border-white/10">
+                  <AllocationPanel assets={allocationAssets} grouping={allocationView} setGrouping={setAllocationView} />
+                </div>
+              </div>
+            {/* Performance Chart Section */}
+            <div className="lg:col-span-4 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-lg font-semibold text-white">Portfolio Performance</h2>
+                <div className="flex items-center space-x-4">
+                  {benchmarksSelector}
+                </div>
+              </div>
+              
+              <div className="bg-white/5 rounded-xl p-4">
+                <GenericPerformanceSection
+                  title="Portfolio Performance"
+                  valueType={performanceValueType}
+                  onValueTypeChange={setPerformanceValueType}
+                  data={filteredPerformanceData}
+                  series={combinedSeriesForChart}
+                  dateRange={performanceDateRange}
+                  onDateRangeChange={setPerformanceDateRange}
+                  minDate={performanceDateBounds.minDate}
+                  maxDate={performanceDateBounds.maxDate}
+                  onSetYTD={setPerformanceYTD}
+                  loading={false}
+                  notEnoughDataMessage="Not enough portfolio data to display performance chart"
+                  finalValue={finalPerformanceValue}
+                  selector={null}
+                />
               </div>
             </div>
 

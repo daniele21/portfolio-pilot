@@ -513,14 +513,31 @@ def portfolio_allocation(portfolio_name):
     try:
         grouping = request.args.get('grouping', 'overall')
         
+        # Support additional grouping modes: 'category', 'risk', 'category_risk'
         if grouping == 'overall':
             from core.portfolio import get_overall_asset_allocation
             allocation_data = get_overall_asset_allocation(portfolio_name)
         elif grouping == 'quoteType':
             from core.portfolio import get_asset_allocation_by_quote_type
             allocation_data = get_asset_allocation_by_quote_type(portfolio_name)
+        elif grouping in ('category', 'risk', 'category_risk'):
+            # Uses saved holdings metadata (portfolio_holdings) when available
+            from core.portfolio import get_asset_allocation_by_category_and_risk
+            full = get_asset_allocation_by_category_and_risk(portfolio_name)
+            # Return a subset depending on requested grouping
+            if grouping == 'category':
+                allocation_data = full.get('by_category', {})
+            elif grouping == 'risk':
+                allocation_data = full.get('by_risk', {})
+            else:
+                allocation_data = full
+        elif grouping in ('assetType', 'asset_type'):
+            # Group by holdings' asset_type field (uses saved portfolio_holdings metadata)
+            from core.portfolio import get_asset_allocation_by_asset_type
+            full = get_asset_allocation_by_asset_type(portfolio_name)
+            allocation_data = full.get('by_asset_type', {})
         else:
-            return jsonify({'error': 'Invalid grouping parameter. Use "overall" or "quoteType"'}), 400
+            return jsonify({'error': 'Invalid grouping parameter. Use "overall", "quoteType", "category", "risk" or "category_risk"'}), 400
         
         cache_key = f"allocation::{portfolio_name}::grouping={grouping}"
         cached = _get_intraday_cached(cache_key)

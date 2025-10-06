@@ -475,7 +475,7 @@ export const fetchPortfolioReturnsKpis = async (portfolioName: string): Promise<
 // Fetch asset allocation from backend API
 export const fetchPortfolioAllocation = async (
   portfolioName: string,
-  grouping: 'overall' | 'quoteType' = 'overall'
+  grouping: 'overall' | 'quoteType' | 'category' | 'risk' | 'category_risk' = 'overall'
 ): Promise<{ grouping: string; allocation: any } | null> => {
   if (!portfolioName) return null;
   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
