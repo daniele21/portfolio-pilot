@@ -10,10 +10,13 @@ import {
   fetchPortfolioPerformance
 } from '../../services/portfolioService';
 import PortfolioSelector from './components/PortfolioSelector';
-import AllocationPanel from './components/AllocationPanel';
 import TickerPerformanceSection from './components/TickerPerformanceSection';
+import ProjectOverview from './modules/ProjectOverview';
+import RiskAnalysis from './modules/RiskAnalysis';
+import AssetAllocationSummary from './modules/AssetAllocationSummary';
+import PerformanceChartSection from './modules/PerformanceChartSection';
 import { ChartBarIcon, CurrencyDollarIcon, ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
-import GenericPerformanceSection, { ValueType } from '../../components/PerformanceSection';
+import { ValueType } from '../../components/PerformanceSection';
 import { fetchBenchmarkPerformance } from '../../services/marketDataService';
 import { Listbox, Transition } from '@headlessui/react';
 import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
@@ -407,143 +410,55 @@ const SimpleHome: React.FC = () => {
 
         {selectedPortfolio && (
           <div className="space-y-8">
-            {/* Portfolio Summary Dashboard */}
+            {/* Portfolio Summary Dashboard (modularized) */}
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              {/* Portfolio Value & Performance */}
-              <div className="lg:col-span-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-lg font-semibold text-white">Portfolio Overview</h2>
-                  <div className="text-xs text-slate-400 bg-slate-800/50 px-3 py-1 rounded-full">
-                    Last Updated: {new Date().toLocaleDateString()}
-                  </div>
-                </div>
-                
-                <div className="space-y-6">
-                  {/* Portfolio Value */}
-                  <div className="border-b border-white/10 pb-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-300 text-sm font-medium">Total Portfolio Value</span>
-                      <div className="text-right">
-                        <div className="text-2xl font-bold text-white">
-                          {maskPortfolioValue ? '••••••••' : (
-                            performanceDerived.latestAbs !== null 
-                              ? `$${performanceDerived.latestAbs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                              : 'N/A'
-                          )}
-                        </div>
-                        {performanceDerived.latestNet !== null && (
-                          <div className={`text-sm font-medium ${performanceDerived.latestNet >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {performanceDerived.latestNet >= 0 ? '+' : ''}${performanceDerived.latestNet.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+              <ProjectOverview
+                performanceDerived={performanceDerived}
+                maskPortfolioValue={maskPortfolioValue}
+                returnsKpis={returnsKpis}
+                kpis={kpis}
+              />
 
-                  {/* Performance Metrics */}
-                  <div className="grid grid-cols-2 gap-4">
-                    {returnsKpis && Object.entries(returnsKpis).slice(0, 4).map(([period, data]: [string, any]) => {
-                      const returnPct = data?.portfolio?.return_pct;
-                      if (typeof returnPct !== 'number') return null;
-                      
-                      return (
-                        <div key={period} className="bg-white/5 rounded-lg p-3">
-                          <div className="text-xs text-slate-400 uppercase tracking-wide">
-                            {period.replace('_', ' ')}
-                          </div>
-                          <div className={`text-lg font-bold ${returnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(2)}%
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+              <RiskAnalysis
+                volatilityWindow={volatilityWindow}
+                volatilityValue={portfolioVolatility?.volatility}
+                setVolatilityWindow={setVolatilityWindow}
+                presets={VOLATILITY_PRESETS}
+              />
 
-              {/* Risk Metrics */}
-              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
-                <h2 className="text-lg font-semibold text-white mb-6">Risk Analysis</h2>
-                <div className="space-y-4">
-                  <div className="bg-white/5 rounded-lg p-4">
-                    <div className="text-xs text-slate-400 uppercase tracking-wide mb-2">
-                      Volatility ({VOLATILITY_PRESETS.find(opt => opt.value === volatilityWindow)?.label})
-                    </div>
-                    <div className="text-xl font-bold text-white">
-                      {portfolioVolatility?.volatility?.toFixed(2) ?? 'N/A'}%
-                    </div>
-                  </div>
-                  
-                  {/* Volatility selector */}
-                  <div className="space-y-2">
-                    <div className="text-xs text-slate-400 uppercase tracking-wide">Period</div>
-                    <div className="grid grid-cols-2 gap-2">
-                      {VOLATILITY_PRESETS.map(preset => (
-                        <button
-                          key={preset.value}
-                          onClick={() => setVolatilityWindow(preset.value)}
-                          className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-                            volatilityWindow === preset.value
-                              ? 'bg-blue-500 text-white'
-                              : 'bg-white/5 text-slate-300 hover:bg-white/10'
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Asset Allocation Summary */}
-              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
-                <h2 className="text-lg font-semibold text-white mb-6">Asset Allocation</h2>
-                <div className="space-y-3">
-                  {allocationAssets.slice(0, 5).map((asset, index) => (
-                    <div key={asset.id} className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div className={`w-3 h-3 rounded-full bg-gradient-to-r ${
-                          ['from-blue-400 to-blue-600', 'from-green-400 to-green-600', 'from-yellow-400 to-yellow-600', 'from-red-400 to-red-600', 'from-purple-400 to-purple-600'][index % 5]
-                        }`} />
-                        <span className="text-sm font-medium text-white">{asset.symbol}</span>
-                      </div>
-                      <span className="text-sm text-slate-300">{asset.allocation_pct?.toFixed(1)}%</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 pt-4 border-t border-white/10">
-                  <AllocationPanel assets={allocationAssets} grouping={allocationView} setGrouping={setAllocationView} />
-                </div>
-              </div>
+              <AssetAllocationSummary
+                allocationAssets={allocationAssets}
+                allocationView={allocationView}
+                setAllocationView={setAllocationView}
+              />
             </div>
 
-            {/* Performance Chart Section */}
-            <div className="lg:col-span-4 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-lg font-semibold text-white">Portfolio Performance</h2>
-                <div className="flex items-center space-x-4">
-                  {benchmarksSelector}
+            {/* Performance Chart Section (modularized) */}
+            <div className="lg:col-span-4">
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-lg font-semibold text-white">Portfolio Performance</h2>
+                  <div className="flex items-center space-x-4">
+                    {benchmarksSelector}
+                  </div>
                 </div>
-              </div>
-              
-              <div className="bg-white/5 rounded-xl p-4">
-                <GenericPerformanceSection
-                  title="Portfolio Performance"
-                  valueType={performanceValueType}
-                  onValueTypeChange={setPerformanceValueType}
-                  data={filteredPerformanceData}
-                  series={combinedSeriesForChart}
-                  dateRange={performanceDateRange}
-                  onDateRangeChange={setPerformanceDateRange}
-                  minDate={performanceDateBounds.minDate}
-                  maxDate={performanceDateBounds.maxDate}
-                  onSetYTD={setPerformanceYTD}
-                  loading={false}
-                  notEnoughDataMessage="Not enough portfolio data to display performance chart"
-                  finalValue={finalPerformanceValue}
-                  selector={null}
-                />
+
+                <div className="bg-white/5 rounded-xl p-4">
+                  <PerformanceChartSection
+                    title="Portfolio Performance"
+                    valueType={performanceValueType}
+                    onValueTypeChange={setPerformanceValueType}
+                    data={filteredPerformanceData}
+                    series={combinedSeriesForChart}
+                    dateRange={performanceDateRange}
+                    onDateRangeChange={setPerformanceDateRange}
+                    minDate={performanceDateBounds.minDate}
+                    maxDate={performanceDateBounds.maxDate}
+                    onSetYTD={setPerformanceYTD}
+                    loading={false}
+                    finalValue={finalPerformanceValue}
+                  />
+                </div>
               </div>
             </div>
 
