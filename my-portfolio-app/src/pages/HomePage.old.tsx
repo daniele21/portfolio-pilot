@@ -263,8 +263,8 @@ const HomePage: React.FC = () => {
     isLoading: volatilityLoading,
     error: volatilityError
   } = useQuery({
-    queryKey: ['portfolioVolatility', selectedPortfolio, isLoggedIn, idToken],
-    queryFn: () => selectedPortfolio ? fetchPortfolioVolatility(selectedPortfolio) : null,
+    queryKey: ['portfolioVolatility', selectedPortfolio, isLoggedIn, idToken, '30'],
+    queryFn: () => selectedPortfolio ? fetchPortfolioVolatility(selectedPortfolio, { window: '30' }) : null,
     enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
   });
 
@@ -301,7 +301,9 @@ const HomePage: React.FC = () => {
       }
       // --- Always add portfolio volatility card if available from either API or KPIs object ---
       let volatilityValue: number | undefined = undefined;
-      if (typeof portfolioVolatility === 'number') {
+      if (portfolioVolatility && typeof portfolioVolatility === 'object' && typeof (portfolioVolatility as any).volatility === 'number') {
+        volatilityValue = (portfolioVolatility as any).volatility;
+      } else if (typeof portfolioVolatility === 'number') {
         volatilityValue = portfolioVolatility;
       } else if (typeof k.volatility === 'number') {
         volatilityValue = k.volatility;
@@ -309,7 +311,7 @@ const HomePage: React.FC = () => {
       if (typeof volatilityValue === 'number') {
         cards.push({
           id: 'portfolio_volatility',
-          name: 'Volatility (Ann.)',
+          name: 'Volatility (30d)',
           value: volatilityValue.toFixed(2) + '%',
           unit: '',
           status: TrafficLightStatus.NEUTRAL,

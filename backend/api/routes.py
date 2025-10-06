@@ -541,16 +541,62 @@ def portfolio_allocation(portfolio_name):
 @bp.route('/api/portfolio/<string:portfolio_name>/volatility', methods=['GET'])
 def portfolio_volatility(portfolio_name):
     try:
-        from core.portfolio import compute_portfolio_volatility
+        from core.portfolio import (
+            compute_portfolio_volatility,
+            DEFAULT_VOLATILITY_WINDOW,
+            VALID_VOLATILITY_WINDOWS,
+            DEFAULT_EWM_SPAN,
+        )
         import math
-        cache_key = f"volatility::{portfolio_name}"
+
+        raw_window = (request.args.get('window') or '').strip()
+        method = 'rolling'
+        cache_window_key = 'full'
+        window_value = None
+
+        if not raw_window:
+            window_value = DEFAULT_VOLATILITY_WINDOW
+            cache_window_key = str(window_value)
+        else:
+            lowered = raw_window.lower()
+            if lowered in {'full', 'all'}:
+                window_value = None
+                cache_window_key = 'full'
+            elif lowered.startswith('ewm') or lowered.startswith('ewma'):
+                method = 'ewm'
+                span_token = lowered.replace('ewma', 'ewm')
+                span_value = ''.join(filter(str.isdigit, span_token))
+                if span_value:
+                    try:
+                        span = int(span_value)
+                    except ValueError:
+                        return jsonify({'error': 'Invalid EWMA window span.'}), 400
+                    if span < 2:
+                        return jsonify({'error': 'EWMA span must be at least 2.'}), 400
+                    window_value = span
+                else:
+                    window_value = DEFAULT_EWM_SPAN
+                cache_window_key = f'ewm{window_value}'
+            else:
+                try:
+                    parsed = int(raw_window)
+                except ValueError:
+                    return jsonify({'error': 'Invalid window parameter. Use 30, 90, 252, ewm or full.'}), 400
+                if parsed not in VALID_VOLATILITY_WINDOWS:
+                    return jsonify({'error': f'Unsupported window. Choose from {sorted(VALID_VOLATILITY_WINDOWS)} or "full"/"ewm".'}), 400
+                window_value = parsed
+                cache_window_key = str(parsed)
+
+        cache_key = f"volatility::{portfolio_name}::method={method}::window={cache_window_key}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
 
-        volatility = compute_portfolio_volatility(portfolio_name)
+        volatility = compute_portfolio_volatility(portfolio_name, window=window_value, method=method)
         payload = {
-            'volatility': volatility if not math.isnan(volatility) else None
+            'volatility': volatility if (volatility is not None and not math.isnan(volatility)) else None,
+            'window': None if window_value is None else window_value,
+            'method': method
         }
         _set_intraday_cache(cache_key, payload)
         return jsonify(payload)

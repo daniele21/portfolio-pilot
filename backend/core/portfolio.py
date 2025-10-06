@@ -768,36 +768,56 @@ def get_ticker_three_days_returns(portfolio_name, ticker):
     three_days_ago = today - pd.Timedelta(days=3)
     return get_ticker_returns_since(portfolio_name, ticker, three_days_ago.strftime('%Y-%m-%d'))
 
-def compute_volatility(returns, window=None):
-    """
-    Compute the volatility (standard deviation) of returns over a given period.
-    Args:
-        returns: List or pandas Series of periodic returns (as decimals, e.g. 0.01 for 1%).
-        period: Window size in days for rolling volatility. If None, computes volatility over all returns.
-    Returns:
-        If period is None: float (annualized volatility for the whole period)
-        If period is int: pandas Series of rolling annualized volatility
-    """
+DEFAULT_VOLATILITY_WINDOW = 30
+VALID_VOLATILITY_WINDOWS = {30, 90, 252}
+DEFAULT_EWM_SPAN = 30
+
+
+def compute_volatility(returns, window=None, *, method='rolling'):
+    """Compute annualized volatility for a returns series."""
     import numpy as np
     import pandas as pd
+
     if not isinstance(returns, pd.Series):
         returns = pd.Series(returns)
-    # Drop NaN values
+
     returns = returns.dropna()
     if len(returns) == 0:
         return np.nan if window is None else pd.Series(dtype=float)
-    # By convention, annualize daily volatility by multiplying by sqrt(252)
+
     ann_factor = np.sqrt(252)
+
+    if method == 'ewm':
+        span = max(int(window or DEFAULT_EWM_SPAN), 2)
+        return returns.ewm(span=span, adjust=False).std(bias=False) * ann_factor
+
     if window is None:
         return returns.std(ddof=1) * ann_factor
-    else:
-        return returns.rolling(window=window).std(ddof=1) * ann_factor
 
-def compute_portfolio_volatility_1d(portfolio_name):
-    """
-    Compute the portfolio volatility using a 1-day rolling window (annualized).
-    Returns a pandas Series of daily annualized volatility values.
-    """
+    rolling_window = max(int(window), 2)
+    return returns.rolling(window=rolling_window, min_periods=min(rolling_window, 2)).std(ddof=1) * ann_factor
+
+
+def _latest_volatility_value(volatility):
+    """Return the most recent non-NaN volatility observation."""
+    import math
+    import pandas as pd
+
+    if isinstance(volatility, pd.Series):
+        clean = volatility.dropna()
+        if clean.empty:
+            return float('nan')
+        return float(clean.iloc[-1])
+
+    try:
+        value = float(volatility)
+    except (TypeError, ValueError):
+        return float('nan')
+
+    return value if not math.isnan(value) else float('nan')
+
+def compute_portfolio_volatility_1d(portfolio_name, window=DEFAULT_VOLATILITY_WINDOW, *, method='rolling'):
+    """Compute rolling annualized portfolio volatility for the requested window."""
     perf = compute_portfolio_performance(portfolio_name)
     import pandas as pd
     if not perf or len(perf) < 2:
@@ -807,13 +827,10 @@ def compute_portfolio_volatility_1d(portfolio_name):
     if 'pct' not in df.columns:
         return pd.Series(dtype=float)
     returns = df['pct'] / 100.0
-    return compute_volatility(returns, window=1)
+    return compute_volatility(returns, window=window, method=method)
 
-def compute_portfolio_volatility(portfolio_name):
-    """
-    Compute the portfolio volatility (annualized) over the entire period (no rolling window).
-    Returns a float value (annualized volatility).
-    """
+def compute_portfolio_volatility(portfolio_name, window=None, *, method='rolling'):
+    """Compute annualized portfolio volatility using full-history or rolling metrics."""
     perf = compute_portfolio_performance(portfolio_name)
     import pandas as pd
     if not perf or len(perf) < 2:
@@ -823,13 +840,11 @@ def compute_portfolio_volatility(portfolio_name):
     if 'pct' not in df.columns:
         return float('nan')
     returns = df['pct'] / 100.0
-    return compute_volatility(returns, window=None)
+    volatility = compute_volatility(returns, window=window, method=method)
+    return _latest_volatility_value(volatility)
 
-def compute_ticker_volatility(portfolio_name):
-    """
-    Compute the annualized volatility (no rolling window) for each ticker in the portfolio.
-    Returns a dict: {ticker: volatility (float), ...}
-    """
+def compute_ticker_volatility(portfolio_name, window=None, *, method='rolling'):
+    """Compute annualized volatility for each ticker, optionally using rolling windows."""
     from db.database import get_transactions
     import pandas as pd
     txs = get_transactions(portfolio_name)
@@ -850,14 +865,12 @@ def compute_ticker_volatility(portfolio_name):
             result[ticker] = float('nan')
             continue
         returns = df['pct'] / 100.0
-        result[ticker] = compute_volatility(returns, window=None)
+        volatility = compute_volatility(returns, window=window, method=method)
+        result[ticker] = _latest_volatility_value(volatility)
     return result
 
-def compute_ticker_volatility_1d(portfolio_name):
-    """
-    Compute the annualized volatility for each ticker in the portfolio using a 1-day rolling window.
-    Returns a dict: {ticker: pandas Series of daily annualized volatility, ...}
-    """
+def compute_ticker_volatility_1d(portfolio_name, window=DEFAULT_VOLATILITY_WINDOW, *, method='rolling'):
+    """Compute rolling annualized volatility series for each ticker."""
     from db.database import get_transactions
     import pandas as pd
     txs = get_transactions(portfolio_name)
@@ -878,7 +891,7 @@ def compute_ticker_volatility_1d(portfolio_name):
             result[ticker] = pd.Series(dtype=float)
             continue
         returns = df['pct'] / 100.0
-        result[ticker] = compute_volatility(returns, window=1)
+        result[ticker] = compute_volatility(returns, window=window, method=method)
     return result
 
 
@@ -1034,4 +1047,3 @@ def evaluate_portfolio_alerts(portfolio_name, thresholds=None):
                 alerts.append({'type': 'drawdown', 'value': mdd, 'threshold': drawdown_thr})
 
     return alerts
-

@@ -23,11 +23,19 @@ import { fetchBenchmarkPerformance } from '../../services/marketDataService';
 import { Listbox, Transition } from '@headlessui/react';
 import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
 
+const VOLATILITY_PRESETS = [
+  { label: '30d', value: '30' },
+  { label: '90d', value: '90' },
+  { label: '252d', value: '252' },
+  { label: 'EWMA', value: 'ewm' }
+];
+
 const SimpleHome: React.FC = () => {
   const { isLoggedIn, idToken } = useAuth();
   const [selectedPortfolio, setSelectedPortfolio] = React.useState<string | null>(null);
   const [maskPortfolioValue, setMaskPortfolioValue] = React.useState(true);
   const [allocationView, setAllocationView] = React.useState<'overall' | 'quoteType'>('overall');
+  const [volatilityWindow, setVolatilityWindow] = React.useState<string>(VOLATILITY_PRESETS[0].value);
   
   // Performance section state
   const [performanceValueType, setPerformanceValueType] = React.useState<ValueType>('abs_value');
@@ -96,8 +104,8 @@ const SimpleHome: React.FC = () => {
   const {
     data: portfolioVolatility
   } = useQuery({
-    queryKey: ['portfolioVolatility', selectedPortfolio, isLoggedIn, idToken],
-    queryFn: () => selectedPortfolio ? fetchPortfolioVolatility(selectedPortfolio) : null,
+    queryKey: ['portfolioVolatility', selectedPortfolio, volatilityWindow, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioVolatility(selectedPortfolio, { window: volatilityWindow }) : null,
     enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
   });
 
@@ -137,7 +145,7 @@ const SimpleHome: React.FC = () => {
   // (returns are provided by backend; no client-side returns computation)
 
   // compute annualized volatility from daily returns for a rolling window of nDays
-  const annualizedVolatility = (nDays: number) => {
+  const annualizedVolatility = React.useCallback((nDays: number) => {
     const returns = performanceDerived.dailyReturns || [];
     if (!returns || returns.length === 0) return null;
     const slice = returns.slice(-nDays);
@@ -147,7 +155,13 @@ const SimpleHome: React.FC = () => {
     const dailyStd = Math.sqrt(variance);
     const annualized = dailyStd * Math.sqrt(252); // trading days
     return annualized * 100; // percent
-  };
+  }, [performanceDerived]);
+
+  const derivedVolatility = React.useMemo(() => ({
+    '30': annualizedVolatility(30),
+    '90': annualizedVolatility(90),
+    '252': annualizedVolatility(252)
+  }), [annualizedVolatility]);
 
   // Map KPIs to card format: always include derived KPIs and then merge backend KPIs
   const kpiCards = React.useMemo(() => {
@@ -197,6 +211,32 @@ const SimpleHome: React.FC = () => {
           icon: ArrowTrendingUpIcon
         });
       }
+    }
+
+    const selectedVolOption = VOLATILITY_PRESETS.find(opt => opt.value === volatilityWindow);
+    const backendVolValue = portfolioVolatility?.volatility;
+    const backendVolMethod = portfolioVolatility?.method;
+    const fallbackVolValue = (derivedVolatility as Record<string, number | null | undefined>)[volatilityWindow];
+    if (typeof backendVolValue === 'number') {
+      cards.push({
+        id: 'portfolio_volatility',
+        name: `Volatility (${selectedVolOption?.label || volatilityWindow})`,
+        value: backendVolValue.toFixed(2) + '%',
+        unit: '',
+        status: TrafficLightStatus.NEUTRAL,
+        description: backendVolMethod === 'ewm' ? 'Exponentially weighted volatility (EWMA)' : 'Rolling annualized volatility',
+        icon: ChartBarIcon
+      });
+    } else if (typeof fallbackVolValue === 'number') {
+      cards.push({
+        id: 'portfolio_volatility',
+        name: `Volatility (${selectedVolOption?.label || volatilityWindow})`,
+        value: fallbackVolValue.toFixed(2) + '%',
+        unit: '',
+        status: TrafficLightStatus.NEUTRAL,
+        description: 'Derived locally from performance history',
+        icon: ChartBarIcon
+      });
     }
 
     // Volatility cards: include derived vols plus any portfolioVolatility
@@ -284,7 +324,7 @@ const SimpleHome: React.FC = () => {
     }
 
     return cards;
-  }, [kpis, maskPortfolioValue, portfolioVolatility, performanceDerived, returnsKpis]);
+  }, [kpis, maskPortfolioValue, portfolioVolatility, performanceDerived, returnsKpis, volatilityWindow, derivedVolatility]);
 
   // Map returns KPIs to cards
   const returnsKpiCards = React.useMemo(() => {
@@ -585,7 +625,14 @@ const SimpleHome: React.FC = () => {
             <div className="xl:col-span-2 space-y-4">
               {/* Volatility Section */}
               <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-sm rounded-2xl border border-white/10 h-fit">
-                <VolatilitySection vol30={annualizedVolatility(30)} vol90={annualizedVolatility(90)} vol365={annualizedVolatility(365)} />
+                <VolatilitySection
+                  options={VOLATILITY_PRESETS}
+                  selectedWindow={volatilityWindow}
+                  onWindowChange={(value) => setVolatilityWindow(value)}
+                  backendVolatility={portfolioVolatility?.volatility ?? null}
+                  backendMethod={portfolioVolatility?.method}
+                  fallbackValues={{ ...derivedVolatility, ewm: null }}
+                />
               </div>
               
               {/* Returns Section */}

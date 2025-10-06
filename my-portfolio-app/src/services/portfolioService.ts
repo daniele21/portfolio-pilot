@@ -551,11 +551,26 @@ export const fetchPortfolioReport = async (portfolioName: string, force: boolean
   }
 };
 
+export interface PortfolioVolatilityResponse {
+  volatility: number | null;
+  window: number | null;
+  method: 'rolling' | 'ewm' | string;
+}
+
 // Fetch portfolio volatility from the backend API
-export async function fetchPortfolioVolatility(portfolioName: string): Promise<number | null> {
+export async function fetchPortfolioVolatility(
+  portfolioName: string,
+  options: { window?: string | number } = {}
+): Promise<PortfolioVolatilityResponse | null> {
   if (!portfolioName) return null;
   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/volatility`;
+  const windowParam = options.window ?? '30';
+  const params = new URLSearchParams();
+  if (windowParam !== undefined && windowParam !== null) {
+    params.set('window', String(windowParam));
+  }
+  const queryString = params.toString();
+  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/volatility${queryString ? `?${queryString}` : ''}`;
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -567,7 +582,11 @@ export async function fetchPortfolioVolatility(portfolioName: string): Promise<n
     }
     if (!res.ok) return null;
     const data = await res.json();
-    return typeof data?.volatility === 'number' ? data.volatility : null;
+    return {
+      volatility: typeof data?.volatility === 'number' ? data.volatility : null,
+      window: typeof data?.window === 'number' ? data.window : null,
+      method: typeof data?.method === 'string' ? data.method : 'rolling'
+    };
   } catch (e) {
     return null;
   }
