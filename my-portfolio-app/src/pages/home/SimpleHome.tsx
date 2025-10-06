@@ -202,10 +202,10 @@ const SimpleHome: React.FC = () => {
     // Volatility cards: include derived vols plus any portfolioVolatility
   //   const vol30 = annualizedVolatility(30);
   //   const vol90 = annualizedVolatility(90);
-    const vol365 = annualizedVolatility(365);
+    // const vol365 = annualizedVolatility(365);
   //   if (typeof vol30 === 'number') cards.push({ id: 'vol_30', name: 'Volatility (30d)', value: vol30.toFixed(2) + '%', unit: '', status: TrafficLightStatus.NEUTRAL, description: '30-day annualized vol', icon: ChartBarIcon });
   //   if (typeof vol90 === 'number') cards.push({ id: 'vol_90', name: 'Volatility (90d)', value: vol90.toFixed(2) + '%', unit: '', status: TrafficLightStatus.NEUTRAL, description: '90-day annualized vol', icon: ChartBarIcon });
-  if (typeof vol365 === 'number') cards.push({ id: 'vol_365', name: 'Volatility (1y)', value: vol365.toFixed(2) + '%', unit: '', status: TrafficLightStatus.NEUTRAL, description: '365-day annualized vol', icon: ChartBarIcon });
+  // if (typeof vol365 === 'number') cards.push({ id: 'vol_365', name: 'Volatility (1y)', value: vol365.toFixed(2) + '%', unit: '', status: TrafficLightStatus.NEUTRAL, description: '365-day annualized vol', icon: ChartBarIcon });
 
     // Merge backend KPIs (if present), avoid duplicating portfolio_value / volatility
     if (k && typeof k === 'object' && Object.keys(k).length > 0) {
@@ -567,89 +567,121 @@ const SimpleHome: React.FC = () => {
       />
 
       {selectedPortfolio && (
-        <div className="space-y-8 w-full">
-          {/* Key Portfolio KPIs section */}
-          <KeyPortfolioKpis
-            kpis={kpiCards}
-            maskPortfolioValue={maskPortfolioValue}
-            onToggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
-          />
-
-          {/* Dedicated Volatility section (moved out of Key KPIs) */}
-          <VolatilitySection vol30={annualizedVolatility(30)} vol90={annualizedVolatility(90)} vol365={annualizedVolatility(365)} />
-
-          {/* Recent Portfolio Returns */}
-          {/* Pass raw returnsKpis first so ReturnsPanel can internally derive cards even if our mapping missed some shapes */}
-          <ReturnsPanel kpis={returnsKpis || returnsKpiCards} />
-
-          {/* Asset Allocation */}
-          <AllocationPanel assets={allocationAssets} grouping={allocationView} setGrouping={setAllocationView} />
-
-          {/* Portfolio Performance Chart */}
-          <CollapsibleSection key="performance" title="Portfolio Performance" defaultOpen={false}>
-            <GenericPerformanceSection
-              title="Portfolio Performance"
-              valueType={performanceValueType}
-              onValueTypeChange={setPerformanceValueType}
-              data={filteredPerformanceData}
-              series={combinedSeriesForChart}
-              dateRange={performanceDateRange}
-              onDateRangeChange={setPerformanceDateRange}
-              minDate={performanceDateBounds.minDate}
-              maxDate={performanceDateBounds.maxDate}
-              onSetYTD={setPerformanceYTD}
-              loading={false}
-              notEnoughDataMessage="Not enough portfolio data to display performance chart"
-              finalValue={finalPerformanceValue}
-              selector={benchmarksSelector}
-            />
-          </CollapsibleSection>
-
-          {/* Individual Asset Performance */}
-          <CollapsibleSection key="asset-performance" title="Individual Asset Performance" defaultOpen={false}>
-            <TickerPerformanceSection
-              selectedPortfolio={selectedPortfolio}
-              availableTickers={availableTickers}
-              selectedTickers={selectedTickers}
-              onSelectedTickersChange={setSelectedTickers}
-            />
-          </CollapsibleSection>
-
-          {/* Risk Analysis - Placeholder */}
-          <CollapsibleSection key="risk-analysis" title="Risk Analysis" defaultOpen={false}>
-            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
-              <div className="text-center text-gray-400 py-12">
-                <ArrowTrendingUpIcon className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                <h3 className="text-lg font-medium mb-2">Risk Analysis Dashboard</h3>
-                <p className="text-sm">Portfolio risk metrics, correlation analysis, and risk-adjusted returns will be displayed here.</p>
-                <p className="text-xs mt-2 opacity-75">Components: Risk metrics cards, correlation heatmap, Sharpe ratio analysis</p>
+        <div className="w-full space-y-6">
+          {/* Top Section: KPIs (60%) + Metrics Stack (40%) */}
+          <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+            {/* Key Portfolio KPIs - 60% width (3/5 columns) */}
+            <div className="xl:col-span-3">
+              <div className="bg-gradient-to-br from-slate-800/30 to-slate-900/30 backdrop-blur-sm rounded-2xl border border-white/10 p-4">
+                <KeyPortfolioKpis
+                  kpis={kpiCards}
+                  maskPortfolioValue={maskPortfolioValue}
+                  onToggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
+                />
               </div>
             </div>
-          </CollapsibleSection>
 
-          {/* AI Insights - Placeholder */}
-          <CollapsibleSection key="ai-insights" title="AI Portfolio Insights" defaultOpen={false}>
-            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
-              <div className="text-center text-gray-400 py-12">
-                <CurrencyDollarIcon className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                <h3 className="text-lg font-medium mb-2">AI-Powered Portfolio Insights</h3>
-                <p className="text-sm">Personalized recommendations, market analysis, and portfolio optimization suggestions.</p>
-                <p className="text-xs mt-2 opacity-75">Component: ChatInterface for AI analysis and recommendations</p>
+            {/* Metrics Stack - 40% width (2/5 columns) */}
+            <div className="xl:col-span-2 space-y-4">
+              {/* Volatility Section */}
+              <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-sm rounded-2xl border border-white/10 h-fit">
+                <VolatilitySection vol30={annualizedVolatility(30)} vol90={annualizedVolatility(90)} vol365={annualizedVolatility(365)} />
+              </div>
+              
+              {/* Returns Section */}
+              <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-sm rounded-2xl border border-white/10 h-fit">
+                <ReturnsPanel kpis={returnsKpis || returnsKpiCards} />
+              </div>
+
+              {/* Asset Allocation (moved into metrics stack) */}
+              <div className="bg-gradient-to-br from-slate-800/30 to-slate-900/30 backdrop-blur-sm rounded-2xl border border-white/10 p-1">
+                <AllocationPanel assets={allocationAssets} grouping={allocationView} setGrouping={setAllocationView} />
               </div>
             </div>
-          </CollapsibleSection>
+          </div>
 
-          {/* Client Summary Report - Placeholder */}
-          <CollapsibleSection key="client-report" title="Client Summary Report" defaultOpen={false}>
-            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
-              <div className="text-center text-gray-400 py-12">
-                <ChartBarIcon className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                <h3 className="text-lg font-medium mb-2">Comprehensive Client Report</h3>
-                <p className="text-sm">Detailed portfolio summary, performance attribution, and executive summary for client meetings.</p>
-                <p className="text-xs mt-2 opacity-75">Component: Automated report generation with key insights and recommendations</p>
-              </div>
+          {/* Performance Charts Row */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            {/* Portfolio Performance Chart */}
+            <div className="xl:col-span-2">
+              <CollapsibleSection key="performance" title="Portfolio Performance" defaultOpen={true}>
+                <div className="bg-gradient-to-br from-slate-800/40 to-slate-900/40 backdrop-blur-sm rounded-xl border border-white/10 p-4">
+                  <GenericPerformanceSection
+                    title="Portfolio Performance"
+                    valueType={performanceValueType}
+                    onValueTypeChange={setPerformanceValueType}
+                    data={filteredPerformanceData}
+                    series={combinedSeriesForChart}
+                    dateRange={performanceDateRange}
+                    onDateRangeChange={setPerformanceDateRange}
+                    minDate={performanceDateBounds.minDate}
+                    maxDate={performanceDateBounds.maxDate}
+                    onSetYTD={setPerformanceYTD}
+                    loading={false}
+                    notEnoughDataMessage="Not enough portfolio data to display performance chart"
+                    finalValue={finalPerformanceValue}
+                    selector={benchmarksSelector}
+                  />
+                </div>
+              </CollapsibleSection>
             </div>
-          </CollapsibleSection>
+
+            {/* Individual Asset Performance */}
+            <div className="xl:col-span-2">
+              <CollapsibleSection key="asset-performance" title="Individual Asset Performance" defaultOpen={false}>
+                <div className="bg-gradient-to-br from-slate-800/40 to-slate-900/40 backdrop-blur-sm rounded-xl border border-white/10 p-4">
+                  <TickerPerformanceSection
+                    selectedPortfolio={selectedPortfolio}
+                    availableTickers={availableTickers}
+                    selectedTickers={selectedTickers}
+                    onSelectedTickersChange={setSelectedTickers}
+                  />
+                </div>
+              </CollapsibleSection>
+            </div>
+          </div>
+
+          {/* Analytics Row: Risk + AI + Reports */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Risk Analysis */}
+            <CollapsibleSection key="risk-analysis" title="Risk Analysis" defaultOpen={false}>
+              <div className="bg-gradient-to-br from-amber-900/20 to-orange-900/20 backdrop-blur-sm rounded-xl p-6 border border-amber-500/20 min-h-[200px]">
+                <div className="text-center text-amber-200 py-8">
+                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-amber-500/20 mb-4">
+                    <ArrowTrendingUpIcon className="h-8 w-8 text-amber-400" />
+                  </div>
+                  <h3 className="text-base font-semibold mb-2 text-amber-100">Risk Metrics</h3>
+                  <p className="text-sm opacity-80 leading-relaxed">Portfolio risk analysis, correlation heatmap, and Sharpe ratios</p>
+                </div>
+              </div>
+            </CollapsibleSection>
+
+            {/* AI Insights */}
+            <CollapsibleSection key="ai-insights" title="AI Insights" defaultOpen={false}>
+              <div className="bg-gradient-to-br from-indigo-900/20 to-purple-900/20 backdrop-blur-sm rounded-xl p-6 border border-indigo-500/20 min-h-[200px]">
+                <div className="text-center text-indigo-200 py-8">
+                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-indigo-500/20 mb-4">
+                    <CurrencyDollarIcon className="h-8 w-8 text-indigo-400" />
+                  </div>
+                  <h3 className="text-base font-semibold mb-2 text-indigo-100">AI Analytics</h3>
+                  <p className="text-sm opacity-80 leading-relaxed">Smart recommendations and market insights</p>
+                </div>
+              </div>
+            </CollapsibleSection>
+
+            {/* Client Reports */}
+            <CollapsibleSection key="client-report" title="Client Reports" defaultOpen={false}>
+              <div className="bg-gradient-to-br from-emerald-900/20 to-teal-900/20 backdrop-blur-sm rounded-xl p-6 border border-emerald-500/20 min-h-[200px]">
+                <div className="text-center text-emerald-200 py-8">
+                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-emerald-500/20 mb-4">
+                    <ChartBarIcon className="h-8 w-8 text-emerald-400" />
+                  </div>
+                  <h3 className="text-base font-semibold mb-2 text-emerald-100">Executive Reports</h3>
+                  <p className="text-sm opacity-80 leading-relaxed">Comprehensive portfolio summaries and analysis</p>
+                </div>
+              </div>
+            </CollapsibleSection>
+          </div>
         </div>
       )}
 

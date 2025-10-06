@@ -18,7 +18,7 @@ export interface KeyPortfolioKpisProps {
 const KeyPortfolioKpis: React.FC<KeyPortfolioKpisProps> = ({ kpis, maskPortfolioValue, onToggleMaskPortfolioValue }) => {
   return (
     <CollapsibleSection title="Key Portfolio KPIs">
-      <div className="flex flex-row flex-wrap gap-6 justify-center items-center">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
         {kpis.map(kpi => (
           kpi.id === 'portfolio_value' ? (
             <KpiCard
@@ -27,9 +27,10 @@ const KeyPortfolioKpis: React.FC<KeyPortfolioKpisProps> = ({ kpis, maskPortfolio
               maskPortfolioValue={maskPortfolioValue}
               onToggleMaskPortfolioValue={onToggleMaskPortfolioValue}
               color={kpi.color}
+              small={true}
             />
           ) : (
-            <KpiCard key={kpi.id} kpi={kpi} color={kpi.color} />
+            <KpiCard key={kpi.id} kpi={kpi} color={kpi.color} small={true} />
           )
         ))}
       </div>
