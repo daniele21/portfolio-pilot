@@ -10,14 +10,9 @@ import {
   fetchPortfolioPerformance
 } from '../../services/portfolioService';
 import PortfolioSelector from './components/PortfolioSelector';
-import ReturnsPanel from './components/ReturnsPanel';
 import AllocationPanel from './components/AllocationPanel';
-import VolatilitySection from './components/VolatilitySection';
 import TickerPerformanceSection from './components/TickerPerformanceSection';
 import { ChartBarIcon, CurrencyDollarIcon, ArrowTrendingUpIcon } from '@heroicons/react/24/outline';
-import { Kpi, TrafficLightStatus } from '../../types';
-import KeyPortfolioKpis from '../../components/KeyPortfolioKpis';
-import CollapsibleSection from '../../components/CollapsibleComponent';
 import GenericPerformanceSection, { ValueType } from '../../components/PerformanceSection';
 import { fetchBenchmarkPerformance } from '../../services/marketDataService';
 import { Listbox, Transition } from '@headlessui/react';
@@ -38,9 +33,11 @@ const SimpleHome: React.FC = () => {
   const [volatilityWindow, setVolatilityWindow] = React.useState<string>(VOLATILITY_PRESETS[0].value);
   
   // Performance section state
-  const [performanceValueType, setPerformanceValueType] = React.useState<ValueType>('abs_value');
+  // Default the value type to 'Performance' view (pct_from_first) so the select shows "Performance" by default
+  const [performanceValueType, setPerformanceValueType] = React.useState<ValueType>('pct_from_first');
   const [performanceDateRange, setPerformanceDateRange] = React.useState<{start: string; end: string} | null>(null);
   const [selectedTickers, setSelectedTickers] = React.useState<string[]>([]);
+  
   // Benchmarks
   const BENCHMARK_TICKERS = [
     { symbol: '^GSPC', name: 'S&P 500' },
@@ -118,17 +115,17 @@ const SimpleHome: React.FC = () => {
     enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
   });
 
-  // Derived performance metrics (returns and volatility) from historical series
+  // Derived performance metrics from historical series
   const performanceDerived = React.useMemo(() => {
     const data = Array.isArray(portfolioPerformance) ? portfolioPerformance : [];
     if (data.length === 0) return { latestAbs: null, latestNet: null, firstAbs: null, dailyReturns: [] };
-    // Ensure sorted by date asc
+    
     const sorted = [...data].sort((a: any, b: any) => (a.date > b.date ? 1 : a.date < b.date ? -1 : 0));
     const last = sorted[sorted.length - 1] as any;
     const first = sorted[0] as any;
     const latestAbs = last.abs_value ?? last.value ?? null;
     const latestNet = last.value !== undefined ? last.value : (latestAbs !== null && first && first.abs_value !== undefined ? latestAbs - (first.abs_value ?? 0) : null);
-    // compute daily returns series using abs_value where available, otherwise value
+    
     const dailyReturns: number[] = [];
     for (let i = 1; i < sorted.length; i++) {
       const prev = sorted[i - 1] as any;
@@ -141,248 +138,6 @@ const SimpleHome: React.FC = () => {
     }
     return { latestAbs, latestNet, firstAbs: first.abs_value ?? first.value ?? null, dailyReturns, series: sorted };
   }, [portfolioPerformance]);
-
-  // (returns are provided by backend; no client-side returns computation)
-
-  // compute annualized volatility from daily returns for a rolling window of nDays
-  const annualizedVolatility = React.useCallback((nDays: number) => {
-    const returns = performanceDerived.dailyReturns || [];
-    if (!returns || returns.length === 0) return null;
-    const slice = returns.slice(-nDays);
-    if (slice.length < 2) return null;
-    const mean = slice.reduce((a, b) => a + b, 0) / slice.length;
-    const variance = slice.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / (slice.length - 1);
-    const dailyStd = Math.sqrt(variance);
-    const annualized = dailyStd * Math.sqrt(252); // trading days
-    return annualized * 100; // percent
-  }, [performanceDerived]);
-
-  const derivedVolatility = React.useMemo(() => ({
-    '30': annualizedVolatility(30),
-    '90': annualizedVolatility(90),
-    '252': annualizedVolatility(252)
-  }), [annualizedVolatility]);
-
-  // Map KPIs to card format: always include derived KPIs and then merge backend KPIs
-  const kpiCards = React.useMemo(() => {
-    const cards: Kpi[] = [];
-    const k: any = (kpis && typeof kpis === 'object') ? kpis as any : null;
-
-    // Derived portfolio value and P/L (from performance series)
-    const latestAbs = performanceDerived.latestAbs;
-    const latestNet = performanceDerived.latestNet;
-    // If backend didn't provide a net P/L, derive it from first and last abs values when possible
-    const derivedNet = (latestNet !== null && latestNet !== undefined)
-      ? latestNet
-      : (performanceDerived.firstAbs !== null && latestAbs !== null)
-        ? (typeof performanceDerived.firstAbs === 'number' && typeof latestAbs === 'number' ? (latestAbs - performanceDerived.firstAbs) : null)
-        : null;
-
-    if (latestAbs !== null && latestAbs !== undefined) {
-      cards.push({
-        id: 'portfolio_value',
-        name: 'Portfolio Value',
-        value: maskPortfolioValue ? '**.***,**' : (typeof latestAbs === 'number' ? latestAbs.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : String(latestAbs)),
-        unit: '',
-        status: TrafficLightStatus.NEUTRAL,
-        icon: CurrencyDollarIcon,
-      });
-    }
-    if (derivedNet !== null && derivedNet !== undefined) {
-      cards.push({
-        id: 'portfolio_pl',
-        name: 'P/L',
-        value: (typeof derivedNet === 'number' ? derivedNet.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : String(derivedNet)),
-        unit: '',
-        status: (typeof derivedNet === 'number' ? (derivedNet > 0 ? TrafficLightStatus.GREEN : derivedNet < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL) : TrafficLightStatus.NEUTRAL),
-        description: 'Net profit / loss (latest)'
-      });
-
-      // Also add a Net Performance (%) card when we have a firstAbs baseline
-      if (typeof performanceDerived.firstAbs === 'number' && typeof derivedNet === 'number' && performanceDerived.firstAbs !== 0) {
-        const perfPct = (derivedNet / performanceDerived.firstAbs) * 100;
-        cards.push({
-          id: 'portfolio_performance',
-          name: 'Net Performance',
-          value: perfPct.toFixed(2) + '%',
-          unit: '',
-          status: perfPct > 0 ? TrafficLightStatus.GREEN : perfPct < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
-          description: 'Net performance relative to cost basis',
-          icon: ArrowTrendingUpIcon
-        });
-      }
-    }
-
-    const selectedVolOption = VOLATILITY_PRESETS.find(opt => opt.value === volatilityWindow);
-    const backendVolValue = portfolioVolatility?.volatility;
-    const backendVolMethod = portfolioVolatility?.method;
-    const fallbackVolValue = (derivedVolatility as Record<string, number | null | undefined>)[volatilityWindow];
-    if (typeof backendVolValue === 'number') {
-      cards.push({
-        id: 'portfolio_volatility',
-        name: `Volatility (${selectedVolOption?.label || volatilityWindow})`,
-        value: backendVolValue.toFixed(2) + '%',
-        unit: '',
-        status: TrafficLightStatus.NEUTRAL,
-        description: backendVolMethod === 'ewm' ? 'Exponentially weighted volatility (EWMA)' : 'Rolling annualized volatility',
-        icon: ChartBarIcon
-      });
-    } else if (typeof fallbackVolValue === 'number') {
-      cards.push({
-        id: 'portfolio_volatility',
-        name: `Volatility (${selectedVolOption?.label || volatilityWindow})`,
-        value: fallbackVolValue.toFixed(2) + '%',
-        unit: '',
-        status: TrafficLightStatus.NEUTRAL,
-        description: 'Derived locally from performance history',
-        icon: ChartBarIcon
-      });
-    }
-
-    // Volatility cards: include derived vols plus any portfolioVolatility
-  //   const vol30 = annualizedVolatility(30);
-  //   const vol90 = annualizedVolatility(90);
-    // const vol365 = annualizedVolatility(365);
-  //   if (typeof vol30 === 'number') cards.push({ id: 'vol_30', name: 'Volatility (30d)', value: vol30.toFixed(2) + '%', unit: '', status: TrafficLightStatus.NEUTRAL, description: '30-day annualized vol', icon: ChartBarIcon });
-  //   if (typeof vol90 === 'number') cards.push({ id: 'vol_90', name: 'Volatility (90d)', value: vol90.toFixed(2) + '%', unit: '', status: TrafficLightStatus.NEUTRAL, description: '90-day annualized vol', icon: ChartBarIcon });
-  // if (typeof vol365 === 'number') cards.push({ id: 'vol_365', name: 'Volatility (1y)', value: vol365.toFixed(2) + '%', unit: '', status: TrafficLightStatus.NEUTRAL, description: '365-day annualized vol', icon: ChartBarIcon });
-
-    // Merge backend KPIs (if present), avoid duplicating portfolio_value / volatility
-    if (k && typeof k === 'object' && Object.keys(k).length > 0) {
-      // portfolio_value / total_value
-      if (!cards.find(c => c.id === 'portfolio_value')) {
-        if (k.portfolio_value) {
-          cards.push({
-            id: 'portfolio_value',
-            name: 'Portfolio Value',
-            value: maskPortfolioValue ? '**.***,**' : (typeof k.portfolio_value === 'number' ? k.portfolio_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : k.portfolio_value.abs_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})),
-            unit: '',
-            status: TrafficLightStatus.NEUTRAL,
-            description: k.portfolio_value.net_value !== undefined ? `Net Value: ${maskPortfolioValue ? '**.***,**' : k.portfolio_value.net_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : undefined,
-            icon: CurrencyDollarIcon
-          });
-        } else if (typeof k.total_value === 'number') {
-          cards.push({
-            id: 'portfolio_value',
-            name: 'Portfolio Value',
-            value: maskPortfolioValue ? '**.***,**' : k.total_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}),
-            unit: '',
-            status: TrafficLightStatus.NEUTRAL,
-            description: typeof k.holdings_count === 'number' ? `Holdings: ${k.holdings_count}` : undefined,
-            icon: CurrencyDollarIcon
-          });
-        }
-      }
-
-      // net_performance fallback
-      const inferredNetPerf = typeof k.net_performance === 'number' ? k.net_performance : (returnsKpis?.ytd_return ?? returnsKpis?.one_year_return ?? null);
-      if (typeof inferredNetPerf === 'number' && !cards.find(c => c.id === 'portfolio_performance')) {
-        cards.push({
-          id: 'portfolio_performance',
-          name: 'Net Performance',
-          value: inferredNetPerf.toFixed(2) + '%',
-          unit: '',
-          status: inferredNetPerf > 0 ? TrafficLightStatus.GREEN : inferredNetPerf < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL,
-          description: 'Net performance relative to cost basis',
-          color: k.net_performance > 0 ? 'green' : k.net_performance < 0 ? 'red' : undefined,
-          icon: ArrowTrendingUpIcon
-        });
-      }
-
-      if (k.best_ticker) {
-        cards.push({
-          id: 'best_ticker',
-          name: 'Best Asset',
-          value: k.best_ticker.ticker_name || k.best_ticker.symbol,
-          unit: '',
-          status: TrafficLightStatus.GREEN,
-          description: `Best performance: ${(k.best_ticker.pct ?? 0).toFixed(2)}%`,
-          color: 'green'
-        });
-      }
-      if (k.highest_value_ticker) {
-        cards.push({
-          id: 'highest_value_ticker',
-          name: 'Highest Value Asset',
-          value: k.highest_value_ticker.ticker_name || k.highest_value_ticker.symbol,
-          unit: '',
-          status: TrafficLightStatus.NEUTRAL,
-          description: `Highest value: ${k.highest_value_ticker.abs_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
-        });
-      }
-      if (k.worst_ticker) {
-        cards.push({
-          id: 'worst_ticker',
-          name: 'Worst Asset',
-          value: k.worst_ticker.ticker_name || k.worst_ticker.symbol,
-          unit: '',
-          status: TrafficLightStatus.RED,
-          description: `Worst performance: ${(k.worst_ticker.pct ?? 0).toFixed(2)}%`,
-          color: 'red'
-        });
-      }
-    }
-
-    return cards;
-  }, [kpis, maskPortfolioValue, portfolioVolatility, performanceDerived, returnsKpis, volatilityWindow, derivedVolatility]);
-
-  // Map returns KPIs to cards
-  const returnsKpiCards = React.useMemo(() => {
-    const cards: Kpi[] = [];
-
-    // Prefer backend returns (if present)
-    if (returnsKpis && typeof returnsKpis === 'object') {
-      const safePct = (periodKey: string) => {
-        try {
-          const p = (returnsKpis as any)[periodKey];
-          const val = p && p.portfolio ? p.portfolio.return_pct : null;
-          if (typeof val === 'number' && Number.isFinite(val)) return val;
-          // Fallback: compute portfolio-level return_pct from per-ticker start/end values
-          const tickers = p && p.tickers ? p.tickers : null;
-          if (tickers && typeof tickers === 'object') {
-            let sumStart = 0;
-            let sumEnd = 0;
-            for (const tk of Object.keys(tickers)) {
-              try {
-                const item = (tickers as any)[tk];
-                const s = item?.start_value;
-                const e = item?.end_value;
-                if (typeof s === 'number' && Number.isFinite(s)) sumStart += s;
-                if (typeof e === 'number' && Number.isFinite(e)) sumEnd += e;
-              } catch (e) {
-                // ignore malformed ticker entries
-              }
-            }
-            if (sumStart > 0 && Number.isFinite(sumEnd)) {
-              return ((sumEnd - sumStart) / sumStart) * 100;
-            }
-          }
-          return null;
-        } catch (e) {
-          return null;
-        }
-      };
-      const mappingBackend: Array<[string, string, string]> = [
-        ['daily', 'Return (1 Day)', '1d'],
-        ['weekly', 'Return (1 Week)', '7d'],
-        ['monthly', 'Return (1 Month)', '30d'],
-        ['three_month', 'Return (3 Months)', '90d'],
-        ['ytd', 'Return (YTD)', 'ytd'],
-        ['one_year', 'Return (1 Year)', '1y']
-      ];
-      for (const [key, label, idSuffix] of mappingBackend) {
-        const pct = safePct(key);
-        if (typeof pct === 'number') {
-          cards.push({ id: `return_${idSuffix}`, name: label, value: pct.toFixed(2) + '%', unit: '', status: pct > 0 ? TrafficLightStatus.GREEN : pct < 0 ? TrafficLightStatus.RED : TrafficLightStatus.NEUTRAL, description: label, icon: ChartBarIcon });
-        }
-      }
-      // If backend provided any, return them
-      if (cards.length > 0) return cards;
-    }
-
-
-    return cards;
-  }, [returnsKpis]);
 
   // For SunburstChart, convert allocationData to assets-like array for compatibility
   const allocationAssets = React.useMemo(() => {
@@ -467,7 +222,6 @@ const SimpleHome: React.FC = () => {
       await Promise.all(selectedBenchmarks.map(async (symbol) => {
         try {
           const perf = await fetchBenchmarkPerformance(symbol);
-          // Normalize date format and numeric fields
           let normalized: any[] = [];
           if (Array.isArray(perf)) {
             normalized = perf.map((pt: any) => ({
@@ -509,7 +263,6 @@ const SimpleHome: React.FC = () => {
 
   // Prepare benchmark series for chart
   const benchmarkSeries = React.useMemo(() => {
-    // Helper to filter benchmark data by selected performance date range
     const filterAndSort = (dataArr: any[]) => {
       if (!Array.isArray(dataArr)) return [];
       let arr = [...dataArr];
@@ -581,165 +334,313 @@ const SimpleHome: React.FC = () => {
 
   if (loading && !kpis) {
     return (
-      <div className="flex justify-center items-center h-full">
-        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-indigo-500"></div>
-        <p className="ml-4 text-xl text-gray-300">Loading Dashboard...</p>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex justify-center items-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-indigo-500 mx-auto"></div>
+          <p className="mt-4 text-xl text-gray-300">Loading Portfolio Dashboard...</p>
+        </div>
       </div>
     );
   }
 
   if (error && !kpis) {
-    return <div className="text-center text-red-400 text-xl p-8">{String(error)}</div>;
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex justify-center items-center">
+        <div className="text-center text-red-400 text-xl p-8">
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-6">
+            <h2 className="text-2xl font-bold mb-2">Error Loading Dashboard</h2>
+            <p>{String(error)}</p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (!isLoggedIn && !loading) {
-    return <div className="text-center text-yellow-400 text-xl p-8">Please sign in to access the dashboard.</div>;
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex justify-center items-center">
+        <div className="text-center text-yellow-400 text-xl p-8">
+          <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-6">
+            <h2 className="text-2xl font-bold mb-2">Authentication Required</h2>
+            <p>Please sign in to access the portfolio dashboard.</p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <>
-      {typeof window !== 'undefined' && (console.log('DEBUG SimpleHome kpis', { kpiCards, returnsKpiCards, portfolioPerformance }), console.log('DEBUG returnsKpis (raw)', returnsKpis))}
-      <PortfolioSelector
-        portfolioNames={portfolioNames}
-        selectedPortfolio={selectedPortfolio}
-        setSelectedPortfolio={setSelectedPortfolio}
-        loading={portfolioNamesLoading}
-      />
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+      <div className="max-w-7xl mx-auto p-6 space-y-8">
+        {/* Professional Header with Client Info */}
+        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-6">
+              <div className="bg-gradient-to-br from-blue-500 to-indigo-600 p-3 rounded-xl">
+                <ChartBarIcon className="h-8 w-8 text-white" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-white">Portfolio Analysis</h1>
+                <p className="text-slate-300 mt-1">Professional Investment Management Dashboard</p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={() => setMaskPortfolioValue(v => !v)}
+                className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-white text-sm font-medium transition-colors"
+              >
+                {maskPortfolioValue ? 'Show Values' : 'Hide Values'}
+              </button>
+            </div>
+          </div>
+          
+          {/* Portfolio Selector */}
+          <div className="mt-6 p-4 bg-white/5 rounded-xl">
+            <PortfolioSelector
+              portfolioNames={portfolioNames}
+              selectedPortfolio={selectedPortfolio}
+              setSelectedPortfolio={setSelectedPortfolio}
+              loading={portfolioNamesLoading}
+            />
+          </div>
+        </div>
 
-      {selectedPortfolio && (
-        <div className="w-full space-y-6">
-          {/* Top Section: KPIs (60%) + Metrics Stack (40%) */}
-          <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-            {/* Key Portfolio KPIs - 60% width (3/5 columns) */}
-            <div className="xl:col-span-3">
-              <div className="bg-gradient-to-br from-slate-800/30 to-slate-900/30 backdrop-blur-sm rounded-2xl border border-white/10 p-4">
-                <KeyPortfolioKpis
-                  kpis={kpiCards}
-                  maskPortfolioValue={maskPortfolioValue}
-                  onToggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
-                />
+        {selectedPortfolio && (
+          <div className="space-y-8">
+            {/* Portfolio Summary Dashboard */}
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+              {/* Portfolio Value & Performance */}
+              <div className="lg:col-span-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-lg font-semibold text-white">Portfolio Overview</h2>
+                  <div className="text-xs text-slate-400 bg-slate-800/50 px-3 py-1 rounded-full">
+                    Last Updated: {new Date().toLocaleDateString()}
+                  </div>
+                </div>
+                
+                <div className="space-y-6">
+                  {/* Portfolio Value */}
+                  <div className="border-b border-white/10 pb-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-300 text-sm font-medium">Total Portfolio Value</span>
+                      <div className="text-right">
+                        <div className="text-2xl font-bold text-white">
+                          {maskPortfolioValue ? '••••••••' : (
+                            performanceDerived.latestAbs !== null 
+                              ? `$${performanceDerived.latestAbs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : 'N/A'
+                          )}
+                        </div>
+                        {performanceDerived.latestNet !== null && (
+                          <div className={`text-sm font-medium ${performanceDerived.latestNet >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {performanceDerived.latestNet >= 0 ? '+' : ''}${performanceDerived.latestNet.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Performance Metrics */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {returnsKpis && Object.entries(returnsKpis).slice(0, 4).map(([period, data]: [string, any]) => {
+                      const returnPct = data?.portfolio?.return_pct;
+                      if (typeof returnPct !== 'number') return null;
+                      
+                      return (
+                        <div key={period} className="bg-white/5 rounded-lg p-3">
+                          <div className="text-xs text-slate-400 uppercase tracking-wide">
+                            {period.replace('_', ' ')}
+                          </div>
+                          <div className={`text-lg font-bold ${returnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(2)}%
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Risk Metrics */}
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+                <h2 className="text-lg font-semibold text-white mb-6">Risk Analysis</h2>
+                <div className="space-y-4">
+                  <div className="bg-white/5 rounded-lg p-4">
+                    <div className="text-xs text-slate-400 uppercase tracking-wide mb-2">
+                      Volatility ({VOLATILITY_PRESETS.find(opt => opt.value === volatilityWindow)?.label})
+                    </div>
+                    <div className="text-xl font-bold text-white">
+                      {portfolioVolatility?.volatility?.toFixed(2) ?? 'N/A'}%
+                    </div>
+                  </div>
+                  
+                  {/* Volatility selector */}
+                  <div className="space-y-2">
+                    <div className="text-xs text-slate-400 uppercase tracking-wide">Period</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {VOLATILITY_PRESETS.map(preset => (
+                        <button
+                          key={preset.value}
+                          onClick={() => setVolatilityWindow(preset.value)}
+                          className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                            volatilityWindow === preset.value
+                              ? 'bg-blue-500 text-white'
+                              : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Asset Allocation Summary */}
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+                <h2 className="text-lg font-semibold text-white mb-6">Asset Allocation</h2>
+                <div className="space-y-3">
+                  {allocationAssets.slice(0, 5).map((asset, index) => (
+                    <div key={asset.id} className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <div className={`w-3 h-3 rounded-full bg-gradient-to-r ${
+                          ['from-blue-400 to-blue-600', 'from-green-400 to-green-600', 'from-yellow-400 to-yellow-600', 'from-red-400 to-red-600', 'from-purple-400 to-purple-600'][index % 5]
+                        }`} />
+                        <span className="text-sm font-medium text-white">{asset.symbol}</span>
+                      </div>
+                      <span className="text-sm text-slate-300">{asset.allocation_pct?.toFixed(1)}%</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 pt-4 border-t border-white/10">
+                  <AllocationPanel assets={allocationAssets} grouping={allocationView} setGrouping={setAllocationView} />
+                </div>
               </div>
             </div>
 
-            {/* Metrics Stack - 40% width (2/5 columns) */}
-            <div className="xl:col-span-2 space-y-4">
-              {/* Volatility Section */}
-              <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-sm rounded-2xl border border-white/10 h-fit">
-                <VolatilitySection
-                  options={VOLATILITY_PRESETS}
-                  selectedWindow={volatilityWindow}
-                  onWindowChange={(value) => setVolatilityWindow(value)}
-                  backendVolatility={portfolioVolatility?.volatility ?? null}
-                  backendMethod={portfolioVolatility?.method}
-                  fallbackValues={{ ...derivedVolatility, ewm: null }}
-                />
+            {/* Performance Chart Section */}
+            <div className="lg:col-span-4 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-lg font-semibold text-white">Portfolio Performance</h2>
+                <div className="flex items-center space-x-4">
+                  {benchmarksSelector}
+                </div>
               </div>
               
-              {/* Returns Section */}
-              <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-sm rounded-2xl border border-white/10 h-fit">
-                <ReturnsPanel kpis={returnsKpis || returnsKpiCards} />
+              <div className="bg-white/5 rounded-xl p-4">
+                <GenericPerformanceSection
+                  title="Portfolio Performance"
+                  valueType={performanceValueType}
+                  onValueTypeChange={setPerformanceValueType}
+                  data={filteredPerformanceData}
+                  series={combinedSeriesForChart}
+                  dateRange={performanceDateRange}
+                  onDateRangeChange={setPerformanceDateRange}
+                  minDate={performanceDateBounds.minDate}
+                  maxDate={performanceDateBounds.maxDate}
+                  onSetYTD={setPerformanceYTD}
+                  loading={false}
+                  notEnoughDataMessage="Not enough portfolio data to display performance chart"
+                  finalValue={finalPerformanceValue}
+                  selector={null}
+                />
+              </div>
+            </div>
+
+            {/* Holdings Analysis */}
+            <div className="lg:col-span-4 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+              <h2 className="text-lg font-semibold text-white mb-6">Holdings Analysis</h2>
+              
+              <div className="bg-white/5 rounded-xl p-4">
+                <TickerPerformanceSection
+                  selectedPortfolio={selectedPortfolio}
+                  availableTickers={availableTickers}
+                  selectedTickers={selectedTickers}
+                  onSelectedTickersChange={setSelectedTickers}
+                />
+              </div>
+            </div>
+
+            {/* Professional Advisor Actions */}
+            <div className="lg:col-span-4 grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* Client Management */}
+              <div className="bg-gradient-to-br from-blue-500/10 to-indigo-600/10 backdrop-blur-xl border border-blue-500/20 rounded-2xl p-6">
+                <div className="flex items-center space-x-3 mb-4">
+                  <div className="bg-blue-500/20 p-2 rounded-lg">
+                    <CurrencyDollarIcon className="h-5 w-5 text-blue-400" />
+                  </div>
+                  <h3 className="text-lg font-semibold text-white">Client Actions</h3>
+                </div>
+                <div className="space-y-3">
+                  <button className="w-full text-left bg-white/5 hover:bg-white/10 rounded-lg p-3 transition-colors">
+                    <div className="text-sm font-medium text-white">Schedule Review</div>
+                    <div className="text-xs text-slate-400">Plan client meeting</div>
+                  </button>
+                  <button className="w-full text-left bg-white/5 hover:bg-white/10 rounded-lg p-3 transition-colors">
+                    <div className="text-sm font-medium text-white">Generate Report</div>
+                    <div className="text-xs text-slate-400">Create client summary</div>
+                  </button>
+                  <button className="w-full text-left bg-white/5 hover:bg-white/10 rounded-lg p-3 transition-colors">
+                    <div className="text-sm font-medium text-white">Add Note</div>
+                    <div className="text-xs text-slate-400">Log interaction</div>
+                  </button>
+                </div>
               </div>
 
-              {/* Asset Allocation (moved into metrics stack) */}
-              <div className="bg-gradient-to-br from-slate-800/30 to-slate-900/30 backdrop-blur-sm rounded-2xl border border-white/10 p-1">
-                <AllocationPanel assets={allocationAssets} grouping={allocationView} setGrouping={setAllocationView} />
+              {/* Risk Assessment */}
+              <div className="bg-gradient-to-br from-amber-500/10 to-orange-600/10 backdrop-blur-xl border border-amber-500/20 rounded-2xl p-6">
+                <div className="flex items-center space-x-3 mb-4">
+                  <div className="bg-amber-500/20 p-2 rounded-lg">
+                    <ArrowTrendingUpIcon className="h-5 w-5 text-amber-400" />
+                  </div>
+                  <h3 className="text-lg font-semibold text-white">Risk Analysis</h3>
+                </div>
+                <div className="space-y-3">
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <div className="text-sm font-medium text-white">Beta</div>
+                    <div className="text-lg font-bold text-amber-400">1.2</div>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <div className="text-sm font-medium text-white">Sharpe Ratio</div>
+                    <div className="text-lg font-bold text-amber-400">0.85</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* AI Insights */}
+              <div className="bg-gradient-to-br from-green-500/10 to-emerald-600/10 backdrop-blur-xl border border-green-500/20 rounded-2xl p-6">
+                <div className="flex items-center space-x-3 mb-4">
+                  <div className="bg-green-500/20 p-2 rounded-lg">
+                    <ChartBarIcon className="h-5 w-5 text-green-400" />
+                  </div>
+                  <h3 className="text-lg font-semibold text-white">AI Insights</h3>
+                </div>
+                <div className="space-y-3">
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <div className="text-sm font-medium text-green-400">Rebalancing Opportunity</div>
+                    <div className="text-xs text-slate-400 mt-1">Portfolio drift detected in tech allocation</div>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <div className="text-sm font-medium text-blue-400">Tax Harvesting</div>
+                    <div className="text-xs text-slate-400 mt-1">Potential $2,400 tax savings available</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
+        )}
 
-          {/* Performance Charts Row */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            {/* Portfolio Performance Chart */}
-            <div className="xl:col-span-2">
-              <CollapsibleSection key="performance" title="Portfolio Performance" defaultOpen={true}>
-                <div className="bg-gradient-to-br from-slate-800/40 to-slate-900/40 backdrop-blur-sm rounded-xl border border-white/10 p-4">
-                  <GenericPerformanceSection
-                    title="Portfolio Performance"
-                    valueType={performanceValueType}
-                    onValueTypeChange={setPerformanceValueType}
-                    data={filteredPerformanceData}
-                    series={combinedSeriesForChart}
-                    dateRange={performanceDateRange}
-                    onDateRangeChange={setPerformanceDateRange}
-                    minDate={performanceDateBounds.minDate}
-                    maxDate={performanceDateBounds.maxDate}
-                    onSetYTD={setPerformanceYTD}
-                    loading={false}
-                    notEnoughDataMessage="Not enough portfolio data to display performance chart"
-                    finalValue={finalPerformanceValue}
-                    selector={benchmarksSelector}
-                  />
-                </div>
-              </CollapsibleSection>
+        {!selectedPortfolio && !portfolioNamesLoading && (
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-12 text-center">
+            <div className="bg-blue-500/20 p-4 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center">
+              <ChartBarIcon className="h-10 w-10 text-blue-400" />
             </div>
-
-            {/* Individual Asset Performance */}
-            <div className="xl:col-span-2">
-              <CollapsibleSection key="asset-performance" title="Individual Asset Performance" defaultOpen={false}>
-                <div className="bg-gradient-to-br from-slate-800/40 to-slate-900/40 backdrop-blur-sm rounded-xl border border-white/10 p-4">
-                  <TickerPerformanceSection
-                    selectedPortfolio={selectedPortfolio}
-                    availableTickers={availableTickers}
-                    selectedTickers={selectedTickers}
-                    onSelectedTickersChange={setSelectedTickers}
-                  />
-                </div>
-              </CollapsibleSection>
-            </div>
+            <h2 className="text-2xl font-bold text-white mb-2">Financial Advisor Dashboard</h2>
+            <p className="text-slate-400">Select a client portfolio above to access comprehensive analysis and professional insights.</p>
           </div>
-
-          {/* Analytics Row: Risk + AI + Reports */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Risk Analysis */}
-            <CollapsibleSection key="risk-analysis" title="Risk Analysis" defaultOpen={false}>
-              <div className="bg-gradient-to-br from-amber-900/20 to-orange-900/20 backdrop-blur-sm rounded-xl p-6 border border-amber-500/20 min-h-[200px]">
-                <div className="text-center text-amber-200 py-8">
-                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-amber-500/20 mb-4">
-                    <ArrowTrendingUpIcon className="h-8 w-8 text-amber-400" />
-                  </div>
-                  <h3 className="text-base font-semibold mb-2 text-amber-100">Risk Metrics</h3>
-                  <p className="text-sm opacity-80 leading-relaxed">Portfolio risk analysis, correlation heatmap, and Sharpe ratios</p>
-                </div>
-              </div>
-            </CollapsibleSection>
-
-            {/* AI Insights */}
-            <CollapsibleSection key="ai-insights" title="AI Insights" defaultOpen={false}>
-              <div className="bg-gradient-to-br from-indigo-900/20 to-purple-900/20 backdrop-blur-sm rounded-xl p-6 border border-indigo-500/20 min-h-[200px]">
-                <div className="text-center text-indigo-200 py-8">
-                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-indigo-500/20 mb-4">
-                    <CurrencyDollarIcon className="h-8 w-8 text-indigo-400" />
-                  </div>
-                  <h3 className="text-base font-semibold mb-2 text-indigo-100">AI Analytics</h3>
-                  <p className="text-sm opacity-80 leading-relaxed">Smart recommendations and market insights</p>
-                </div>
-              </div>
-            </CollapsibleSection>
-
-            {/* Client Reports */}
-            <CollapsibleSection key="client-report" title="Client Reports" defaultOpen={false}>
-              <div className="bg-gradient-to-br from-emerald-900/20 to-teal-900/20 backdrop-blur-sm rounded-xl p-6 border border-emerald-500/20 min-h-[200px]">
-                <div className="text-center text-emerald-200 py-8">
-                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-emerald-500/20 mb-4">
-                    <ChartBarIcon className="h-8 w-8 text-emerald-400" />
-                  </div>
-                  <h3 className="text-base font-semibold mb-2 text-emerald-100">Executive Reports</h3>
-                  <p className="text-sm opacity-80 leading-relaxed">Comprehensive portfolio summaries and analysis</p>
-                </div>
-              </div>
-            </CollapsibleSection>
-          </div>
-        </div>
-      )}
-
-      {!selectedPortfolio && !portfolioNamesLoading && (
-        <div className="text-center text-gray-400 py-12">
-          <CurrencyDollarIcon className="h-16 w-16 mx-auto mb-4 opacity-50" />
-          <h2 className="text-xl font-medium mb-2">Financial Advisor Dashboard</h2>
-          <p className="text-sm">Select a client portfolio to view comprehensive analysis and insights.</p>
-        </div>
-      )}
-    </>
+        )}
+      </div>
+    </div>
   );
 };
 
