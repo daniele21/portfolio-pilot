@@ -2,6 +2,9 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { MantineProvider, ColorSchemeScript } from '@mantine/core';
+import { Notifications } from '@mantine/notifications';
+import { designTheme } from './theme/designSystem';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './AuthContext';
 import { HashRouter } from 'react-router-dom';
@@ -27,10 +30,14 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
+    <ColorSchemeScript />
     <HashRouter>
       <AuthProvider>
         <QueryClientProvider client={queryClient}>
-          <App />
+          <MantineProvider theme={designTheme} defaultColorScheme="dark">
+            <Notifications position="top-right" />
+            <App />
+          </MantineProvider>
         </QueryClientProvider>
       </AuthProvider>
     </HashRouter>

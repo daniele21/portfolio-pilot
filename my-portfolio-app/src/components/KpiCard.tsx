@@ -1,4 +1,5 @@
 import React from 'react';
+import { Card, Group, Text, Badge, Button } from '@mantine/core';
 import { Kpi, TrafficLightStatus } from '../types';
 
 
@@ -9,9 +10,11 @@ interface KpiCardProps {
   onToggleMaskPortfolioValue?: () => void;
   /** Optional color override for the card background (e.g., 'green', 'red') */
   color?: string;
+  /** Use Mantine styled variant instead of tailwind gradient */
+  mantine?: boolean;
 }
 
-const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small, maskPortfolioValue, onToggleMaskPortfolioValue, color }) => {
+const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small, maskPortfolioValue, onToggleMaskPortfolioValue, color, mantine }) => {
   // Professional color schemes with subtle gradients and refined palette
   const COLOR_SCHEMES: Record<string, { bg: string; text: string; accent: string; dot: string }> = {
     green: { 
@@ -82,6 +85,138 @@ const KpiCard: React.FC<KpiCardProps> = React.memo(({ kpi, small, maskPortfolioV
     } else {
       ResolvedIconComponent = IconFromProp;
     }
+  }
+
+  if (mantine) {
+    // Use Mantine components with design system
+    const masked = kpi.id === 'portfolio_value' && maskPortfolioValue;
+    
+    // Status-based styling
+    const getStatusColor = () => {
+      switch (kpi.status) {
+        case TrafficLightStatus.GREEN: return 'green';
+        case TrafficLightStatus.RED: return 'red';
+        case TrafficLightStatus.AMBER: return 'yellow';
+        default: return 'gray';
+      }
+    };
+
+    // small set of gradients for Mantine branch
+    const MANTINE_GRADIENTS: Record<string, string> = {
+      green: 'linear-gradient(135deg,#10b981 0%,#059669 100%)',
+      red: 'linear-gradient(135deg,#fb7185 0%,#ef4444 100%)',
+      indigo: 'linear-gradient(135deg,#6366f1 0%,#4f46e5 100%)',
+      gray: 'linear-gradient(135deg,#334155 0%,#0f172a 100%)',
+      yellow: 'linear-gradient(135deg,#f59e0b 0%,#f97316 100%)',
+      blue: 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)'
+    };
+
+    const gradient = MANTINE_GRADIENTS[color || (kpi.status === TrafficLightStatus.GREEN ? 'green' : kpi.status === TrafficLightStatus.RED ? 'red' : 'gray')] || MANTINE_GRADIENTS.gray;
+
+    return (
+      <Card
+        withBorder
+        radius="md"
+        shadow="sm"
+        padding={small ? 'sm' : 'md'}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          overflow: 'hidden',
+          minHeight: small ? 80 : 100,
+          background: gradient,
+          color: '#fff',
+          border: '1px solid rgba(255,255,255,0.06)',
+          transition: 'transform 175ms ease-in-out, box-shadow 175ms ease-in-out'
+        }}
+      >
+        <Group justify="space-between" gap="xs" align="flex-start">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Group gap={6} wrap="nowrap">
+              <div
+                aria-hidden
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 999,
+                  backgroundColor: `var(--mantine-color-${getStatusColor()}-5)`
+                }}
+              />
+              <Text size={small ? 'xs' : 'sm'} fw={600} truncate style={{ fontFamily: 'Inter, sans-serif' }}>
+                {kpi.name}
+              </Text>
+              {kpi.target && <Badge size="xs" variant="light" color={getStatusColor() as any}>T</Badge>}
+            </Group>
+            {kpi.description && (
+              <Text size="xs" c="dimmed" mt={4} fw={400} style={{ lineHeight: 1.2 }} truncate>
+                {kpi.description}
+              </Text>
+            )}
+          </div>
+
+          {ResolvedIconComponent && typeof ResolvedIconComponent === 'function' && (
+            <div style={{ display: 'flex', alignItems: 'start' }}>
+              <div style={{ padding: 6, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.08)' }}>
+                <ResolvedIconComponent style={{ width: small ? 14 : 18, height: small ? 14 : 18, color: 'rgba(255,255,255,0.95)' }} />
+              </div>
+            </div>
+          )}
+        </Group>
+
+        <div style={{ marginTop: 10, textAlign: 'center', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div>
+            <Text
+              fw={700}
+              size={small ? 'lg' : 'xl'}
+              style={{
+                fontVariantNumeric: 'tabular-nums',
+                fontFamily: 'Inter, sans-serif',
+                lineHeight: 1.05
+              }}
+            >
+              {masked ? '••••••' : (typeof kpi.value === 'number'
+                ? new Intl.NumberFormat(undefined, {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 2,
+                    notation: Math.abs(kpi.value) >= 1_000_000 ? 'compact' : 'standard',
+                    compactDisplay: 'short'
+                  }).format(kpi.value)
+                : kpi.value)}
+            </Text>
+            {kpi.unit && (
+              <Text size="xs" c="dimmed" mt={2} style={{ fontFamily: 'Inter, sans-serif' }}>
+                {kpi.unit}
+              </Text>
+            )}
+          </div>
+        </div>
+
+        {(kpi.target || (kpi.id === 'portfolio_value' && typeof onToggleMaskPortfolioValue === 'function')) && (
+          <Group justify="space-between" mt={6} gap="xs">
+            <div style={{ flex: 1 }}>
+              {kpi.target && (
+                <Text size="xs" c="dimmed" style={{ fontFamily: 'Inter, sans-serif' }}>
+                  Target: <Text component="span" fw={700}>{kpi.target}</Text>
+                </Text>
+              )}
+            </div>
+            {kpi.id === 'portfolio_value' && typeof onToggleMaskPortfolioValue === 'function' && (
+              <Button
+                size="xs"
+                variant="white"
+                onClick={onToggleMaskPortfolioValue}
+                style={{ fontFamily: 'Inter, sans-serif', padding: '4px 8px' }}
+                aria-pressed={maskPortfolioValue}
+                aria-label={maskPortfolioValue ? 'Show portfolio value' : 'Hide portfolio value'}
+              >
+                {maskPortfolioValue ? 'Show' : 'Hide'}
+              </Button>
+            )}
+          </Group>
+        )}
+      </Card>
+    );
   }
 
   return (
