@@ -4,7 +4,7 @@ import { Asset } from '../types';
 
 interface SunburstChartProps {
   assets: Asset[];
-  grouping?: 'overall' | 'quoteType' | 'category' | 'risk';
+  grouping?: 'overall' | 'asset_type' | 'category' | 'risk';
   onEditCategory?: undefined;
 }
 
@@ -21,7 +21,7 @@ const CATEGORY_COLORS = [
   '#f97316'  // orange-500
 ];
 
-const getTotals = (assets: Asset[], grouping: 'overall' | 'quoteType' | 'category' | 'risk') => {
+const getTotals = (assets: Asset[], grouping: 'overall' | 'asset_type' | 'category' | 'risk') => {
   if (grouping === 'overall') {
     // For overall, each asset is a slice (not a single group)
     return assets.map(asset => ({
@@ -34,8 +34,8 @@ const getTotals = (assets: Asset[], grouping: 'overall' | 'quoteType' | 'categor
   const totals: Record<string, { value: number; assetIds: string[] }> = {};
   assets.forEach(asset => {
     let groupKey = 'Unknown';
-    if (grouping === 'quoteType') {
-      groupKey = asset.name || asset.symbol || asset.id || 'Unknown';
+    if (grouping === 'asset_type') {
+      groupKey = (asset.asset_type as string) || asset.category || asset.name || asset.symbol || asset.id || 'Unknown';
     } else if (grouping === 'category') {
       groupKey = (asset.category as string) || (asset.asset_type as string) || 'Uncategorized';
     } else if (grouping === 'risk') {

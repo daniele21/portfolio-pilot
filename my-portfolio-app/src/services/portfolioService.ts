@@ -236,6 +236,12 @@ export const getPortfolioHistory = async (): Promise<HistoricalDataPoint[]> => {
   return history || [];
 };
 
+// Fetch Gemini-backed daily risk analysis for a portfolio
+export const fetchPortfolioRisk = async (portfolioName: string): Promise<any | null> => {
+  if (!portfolioName) return null;
+  return await commonPortfolioFetch<any>('risk', portfolioName);
+};
+
 export const getAppliedMovementsLog = async (): Promise<StandardizedMovement[]> => {
     // This returns the local, session-only log. It's not fetched from backend.
     return [...localAppliedMovementsLog];
@@ -359,7 +365,8 @@ export const initialLoad = async (portfolioName: string) => {
 // Fetch ticker name from backend
 export const fetchTickerName = async (ticker: string, idToken: string | null): Promise<string | null> => {
   if (!ticker || !idToken) return null;
-  const apiUrl = `http://localhost:5000/api/ticker/${ticker}`;
+  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const apiUrl = `${cleanApiBaseUrl}/api/ticker/${ticker}`;
   try {
     const response = await fetch(apiUrl, {
       method: 'GET',
@@ -373,6 +380,46 @@ export const fetchTickerName = async (ticker: string, idToken: string | null): P
     return data?.data?.info?.shortName || data?.data?.info?.longName || null;
   } catch {
     return null;
+  }
+};
+
+// Fetch saved targets for a portfolio. Returns an object like { asset_type: {...}, risk: {...} }
+export const fetchPortfolioTargets = async (portfolioName: string): Promise<Record<string, any> | null> => {
+  if (!portfolioName) return null;
+  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${encodeURIComponent(portfolioName)}/targets`;
+  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  const idToken = getAuthIdToken();
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+  try {
+    const resp = await fetch(apiUrl, { headers });
+    if (!resp.ok) {
+      console.warn('fetchPortfolioTargets: non-ok response', resp.status);
+      return null;
+    }
+    const data = await resp.json();
+    return data.targets || null;
+  } catch (e) {
+    console.error('fetchPortfolioTargets error', e);
+    return null;
+  }
+};
+
+// Save targets for a portfolio. Expects mode and targets object. Returns backend JSON or error object.
+export const savePortfolioTargets = async (portfolioName: string, mode: 'asset_type' | 'risk', targets: Record<string, number>) => {
+  if (!portfolioName) return { status: 'error', error: 'No portfolio provided' };
+  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${encodeURIComponent(portfolioName)}/targets`;
+  const idToken = getAuthIdToken();
+  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+  try {
+    const resp = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify({ mode, targets }) });
+    const data = await resp.json();
+    return data;
+  } catch (e) {
+    console.error('savePortfolioTargets error', e);
+    return { status: 'error', error: e instanceof Error ? e.message : String(e) };
   }
 };
 
@@ -475,7 +522,7 @@ export const fetchPortfolioReturnsKpis = async (portfolioName: string): Promise<
 // Fetch asset allocation from backend API
 export const fetchPortfolioAllocation = async (
   portfolioName: string,
-  grouping: 'overall' | 'quoteType' | 'category' | 'risk' | 'category_risk' = 'overall'
+  grouping: 'overall' | 'asset_type' | 'assetType' | 'category' | 'risk' | 'category_risk' = 'overall'
 ): Promise<{ grouping: string; allocation: any } | null> => {
   if (!portfolioName) return null;
   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
@@ -587,6 +634,43 @@ export async function fetchPortfolioVolatility(
       window: typeof data?.window === 'number' ? data.window : null,
       method: typeof data?.method === 'string' ? data.method : 'rolling'
     };
+  } catch (e) {
+    return null;
+  }
+}
+
+export interface PortfolioVolatilityPoint {
+  date: string;
+  volatility: number | null;
+}
+
+/** Fetch rolling volatility series (time-series) from the backend API
+ * Returns an array of { date, volatility } points where volatility is a decimal (e.g. 0.12 = 12%).
+ */
+export async function fetchPortfolioVolatilitySeries(
+  portfolioName: string,
+  options: { window?: string | number } = {}
+): Promise<PortfolioVolatilityPoint[] | null> {
+  if (!portfolioName) return null;
+  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const windowParam = options.window ?? '30';
+  const params = new URLSearchParams();
+  params.set('series', '1');
+  if (windowParam !== undefined && windowParam !== null) {
+    params.set('window', String(windowParam));
+  }
+  const queryString = params.toString();
+  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/volatility${queryString ? `?${queryString}` : ''}`;
+  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  const idToken = getAuthIdToken();
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+  try {
+    const res = await fetch(apiUrl, { headers });
+    if (res.status === 401) return null;
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !Array.isArray(data.series)) return [];
+    return data.series.map((pt: any) => ({ date: String(pt.date), volatility: typeof pt.volatility === 'number' ? pt.volatility : null }));
   } catch (e) {
     return null;
   }

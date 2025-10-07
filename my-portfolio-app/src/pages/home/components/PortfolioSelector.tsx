@@ -13,7 +13,7 @@ const PortfolioSelector: React.FC<Props> = ({ portfolioNames, selectedPortfolio,
   return (
     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
       <div className="flex items-center gap-3">
-        <label className="text-gray-300 text-base font-semibold" htmlFor="portfolio-select">Client Portfolio:</label>
+        <label className="text-gray-300 text-base font-semibold" htmlFor="portfolio-select">Portfolio:</label>
         <div className="min-w-[220px]">
           <Listbox
             value={selectedPortfolio ?? ''}

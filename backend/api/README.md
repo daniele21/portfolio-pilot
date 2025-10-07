@@ -48,7 +48,7 @@ Some endpoints require a Google OAuth2 Bearer token in the `Authorization` heade
 | GET    | `/api/portfolio/<portfolio_name>/tickers`                    | Path: `portfolio_name` | Get all distinct tickers for a portfolio. |
 | DELETE | `/api/portfolio/<portfolio_name>/transaction/<transaction_id>` | Path: `portfolio_name`, `transaction_id` <br> Header: Authorization | Delete a transaction. |
 | GET    | `/api/portfolio/<portfolio_name>/performance`                | Path: `portfolio_name` | Get historical portfolio performance. |
-| GET    | `/api/portfolio/<portfolio_name>/allocation`                 | Path: `portfolio_name` <br> Query: `grouping` (overall/quoteType) <br> Header: Authorization | Get asset allocation data. |
+| GET    | `/api/portfolio/<portfolio_name>/allocation`                 | Path: `portfolio_name` <br> Query: `grouping` (overall/asset_type/category/risk/category_risk) <br> Header: Authorization | Get asset allocation data. |
 
 ---
 

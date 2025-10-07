@@ -60,10 +60,10 @@ const GenericPerformanceSection: React.FC<GenericPerfSectionProps> = ({
 
   return (
     <div className="mb-8">
-      <h2 className="text-2xl font-semibold text-white mb-4 flex items-center">
+      {/* <h2 className="text-2xl font-semibold text-white mb-4 flex items-center">
         <PresentationChartLineIcon className="h-7 w-7 mr-2 text-indigo-400" />
         {title}
-      </h2>
+      </h2> */}
 
       {/* Controls: Value Type radios, final badge, extra selector */}
       <div className="flex flex-wrap items-center gap-4 mb-4 justify-between">

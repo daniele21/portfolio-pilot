@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MagnifyingGlassIcon, ExclamationTriangleIcon, ArrowPathIcon, ChartBarIcon } from '@heroicons/react/24/outline';
-import { fetchTickerDetails } from '../services/marketDataService';
+import { fetchTickerDetails, searchTickers, TickerSearchResultItem } from '../services/marketDataService';
+import { geminiSearch } from '../services/geminiService';
 import PerformanceChart from '../components/PerformanceChart';
 import { HistoricalDataPoint, BackendTickerHistoryItem, TickerInfoDetails, BackendTickerResponse } from '../types';
 import { useAuth } from '../AuthContext';
@@ -13,6 +14,58 @@ const TickerInfoPage: React.FC = () => {
   const [data, setData] = useState<BackendTickerResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<TickerSearchResultItem[]>([]);
+  const [searchLoading, setSearchLoading] = useState<boolean>(false);
+  const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
+  const [inputType, setInputType] = useState<'isin' | 'symbol' | 'name'>('symbol');
+
+  const classifyInput = (raw: string): 'isin' | 'symbol' | 'name' => {
+    const v = (raw || '').trim().toUpperCase();
+    if (!v) return 'name';
+    // ISIN pattern: 2 letters + 9 alnum + 1 digit (total 12 chars)
+    if (/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(v)) return 'isin';
+    // Symbol heuristic: only allowed chars A-Z0-9 . -, no spaces, length reasonable
+    if (/^[A-Z0-9][A-Z0-9\.\-]{0,14}$/.test(v) && !v.includes(' ')) return 'symbol';
+    return 'name';
+  };
+
+  // Track input type as user types
+  useEffect(() => {
+    setInputType(classifyInput(symbolInput));
+  }, [symbolInput]);
+
+  // Search only when suggestions panel is explicitly requested (showSuggestions === true).
+  // This prevents triggering network calls on every keystroke.
+  useEffect(() => {
+    if (!showSuggestions) return;
+    const val = symbolInput.trim();
+    if (val.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setSearchLoading(true);
+      try {
+        // Try Gemini first
+        let resp = await geminiSearch(val, { grounding: true });
+        if (!cancelled && resp && !resp.error && resp.results.length > 0) {
+          setSuggestions(resp.results.slice(0, 15));
+        } else {
+          // Fallback to Yahoo
+          resp = await searchTickers(val, 'yahoo');
+          if (!cancelled && resp && !resp.error && resp.results.length > 0) {
+            setSuggestions(resp.results.slice(0, 15));
+          } else if (!cancelled) {
+            setSuggestions([]);
+          }
+        }
+      } finally {
+        if (!cancelled) setSearchLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showSuggestions, inputType]);
 
   useEffect(() => {
     const loadData = async () => {
@@ -27,37 +80,99 @@ const TickerInfoPage: React.FC = () => {
         return; 
       }
       setLoading(true); setError(null); setData(null);
-      try {
+        try {
         const result = await fetchTickerDetails(tickerToFetch);
         if (result) {
-          // If result is an array, it's a suggestions list from backend (not a perfect match)
+          // If result is an array, it's a suggestions list from backend (not a perfect match).
+          // In that case, show the suggestions without raising an error.
           if (Array.isArray(result)) {
-            setError(`No exact match found for ticker: ${tickerToFetch}. Please select from the suggestions below.`);
-            setData({ error: '', ticker: tickerToFetch, source: 'suggestions', data: undefined } as any);
-            (setData as any)({ error: '', ticker: tickerToFetch, source: 'suggestions', data: undefined, suggestions: result });
+            setData({ error: '', ticker: tickerToFetch, source: 'suggestions', data: undefined, suggestions: result } as any);
           } else if (result.error) {
-            setError(`Error for ${result.ticker}: ${result.error}. This could be an invalid symbol, or a backend/API issue.`);
+            // If the backend returned an explicit error but provided suggestions, show them.
             if ((result as any).suggestions) {
               (setData as any)({ ...result, suggestions: (result as any).suggestions });
             } else {
+              // No suggestions provided by the backend: attempt Gemini first, then Yahoo fallback.
               setData(null);
+              const cls = classifyInput(result.ticker || tickerToFetch);
+              if (cls !== 'name') {
+                setSearchLoading(true);
+                try {
+                  let searchResp = await geminiSearch(result.ticker || tickerToFetch, { grounding: true });
+                  if (!searchResp || searchResp.error || searchResp.results.length === 0) {
+                    searchResp = await searchTickers(result.ticker || tickerToFetch, 'yahoo');
+                  }
+                  if (searchResp && !searchResp.error && searchResp.results.length > 0) {
+                    setSuggestions(searchResp.results.slice(0, 15));
+                    setShowSuggestions(true);
+                  } else {
+                    // Only show error after both Gemini and Yahoo failed to return candidates.
+                    setError(`Error for ${result.ticker}: ${result.error}. This could be an invalid symbol, or a backend/API issue.`);
+                  }
+                } finally {
+                  setSearchLoading(false);
+                }
+              } else {
+                // If classified as a 'name' we will not immediately show an error; let the user refine or press Get Info.
+                // But still surface the backend error in the data object for debugging if needed.
+                (setData as any)({ ...result });
+              }
             }
           } else if (!result.data || (!result.data.info && !result.data.history)) {
-            setError(`No data found for ticker: ${result.ticker}. It might be invalid or delisted.`);
+            // Missing useful data: try Gemini then Yahoo for suggestions before showing an error.
             if ((result as any).suggestions) {
               (setData as any)({ ...result, suggestions: (result as any).suggestions });
             } else {
               setData(null);
+              setSearchLoading(true);
+              try {
+                let searchResp = await geminiSearch(result.ticker || tickerToFetch, { grounding: true });
+                if (!searchResp || searchResp.error || searchResp.results.length === 0) {
+                  searchResp = await searchTickers(result.ticker || tickerToFetch, 'yahoo');
+                }
+                if (searchResp && !searchResp.error && searchResp.results.length > 0) {
+                  setSuggestions(searchResp.results.slice(0, 15));
+                  setShowSuggestions(true);
+                } else {
+                  setError(`No data found for ticker: ${result.ticker}. It might be invalid or delisted.`);
+                }
+              } finally {
+                setSearchLoading(false);
+              }
             }
           } else {
             setData(result);
           }
         } else {
-          setError(`Failed to fetch information for ${tickerToFetch}. The backend might be unavailable or the symbol is invalid.`);
+          // No result at all: attempt Gemini first, then Yahoo. Only show an error if both fail.
+          setData(null);
+          setSearchLoading(true);
+          try {
+            let searchResp = await geminiSearch(tickerToFetch, { grounding: true });
+            if (!searchResp || searchResp.error || searchResp.results.length === 0) {
+              searchResp = await searchTickers(tickerToFetch, 'yahoo');
+            }
+            if (searchResp && !searchResp.error && searchResp.results.length > 0) {
+              setSuggestions(searchResp.results.slice(0, 15));
+              setShowSuggestions(true);
+            } else {
+              setError(`Failed to fetch information for ${tickerToFetch}. The backend might be unavailable or the symbol is invalid.`);
+            }
+          } finally {
+            setSearchLoading(false);
+          }
         }
       } catch (err) {
         console.error("[TickerInfoPage] Exception during fetchTickerDetails:", err);
         setError('An unexpected error occurred while fetching ticker data.');
+        let searchResp = await geminiSearch(tickerToFetch, { grounding: true });
+        if (!searchResp || searchResp.error || searchResp.results.length === 0) {
+          searchResp = await searchTickers(tickerToFetch, 'yahoo');
+        }
+        if (searchResp && !searchResp.error && searchResp.results.length > 0) {
+          setSuggestions(searchResp.results.slice(0, 15));
+          setShowSuggestions(true);
+        }
       } finally {
         setLoading(false);
         setTickerToFetch(null);
@@ -67,12 +182,32 @@ const TickerInfoPage: React.FC = () => {
   }, [tickerToFetch, isLoggedIn, idToken]);
 
   const handleGetInfoClick = () => {
-    if (symbolInput.trim()) {
-      setData(null); setError(null);
-      setTickerToFetch(symbolInput.trim());
-    } else {
-      setError('Please enter a ticker symbol.');
+    const raw = symbolInput.trim();
+    if (!raw) {
+      setError('Please enter a value.');
+      return;
     }
+    const cls = classifyInput(raw);
+    if (cls === 'name') {
+      // Force suggestions panel open and run (if not already) search now
+      setShowSuggestions(true);
+      setError(null);
+      (async () => {
+        if (raw.length >= 2) {
+          setSearchLoading(true);
+          let resp = await geminiSearch(raw, { grounding: true });
+          if (!resp || resp.error || resp.results.length === 0) {
+            resp = await searchTickers(raw, 'yahoo');
+          }
+          if (resp && !resp.error) setSuggestions(resp.results.slice(0, 15));
+          setSearchLoading(false);
+        }
+      })();
+      return; // do not fetch yet
+    }
+    // symbol or isin -> attempt direct fetch
+    setData(null); setError(null); setShowSuggestions(false);
+    setTickerToFetch(raw.toUpperCase());
   };
 
   const transformDataForChart = (historyItems: BackendTickerHistoryItem[] | undefined): HistoricalDataPoint[] => {
@@ -134,11 +269,49 @@ const TickerInfoPage: React.FC = () => {
               id="tickerInput"
               type="text"
               value={symbolInput}
-              onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
+              onChange={(e) => {
+                // While user is typing, hide suggestions and do not call search.
+                setShowSuggestions(false);
+                setSuggestions([]);
+                setSymbolInput(e.target.value.toUpperCase());
+              }}
               placeholder="Enter ticker symbol"
               className="w-full p-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none placeholder-gray-400 text-gray-100"
               onKeyPress={(e) => e.key === 'Enter' && !loading && handleGetInfoClick()}
+              onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
             />
+            {/* Live suggestions dropdown (proactive search) */}
+            {showSuggestions && suggestions.length > 0 && !loading && (
+              <div className="mt-2 bg-gray-800 border border-gray-600 rounded-lg shadow-xl max-h-72 overflow-y-auto divide-y divide-gray-700">
+                {suggestions.map(s => (
+                  <button
+                    key={s.symbol}
+                    type="button"
+                    className="w-full text-left px-3 py-2 hover:bg-gray-700 focus:outline-none focus:bg-gray-700"
+                    onClick={() => {
+                      setSymbolInput(s.symbol.toUpperCase());
+                      setShowSuggestions(false);
+                      setData(null); setError(null);
+                      setTickerToFetch(s.symbol.toUpperCase());
+                    }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-gray-100 mr-2">{s.symbol}</span>
+                      {s.exchDisp && <span className="text-xs text-indigo-300">{s.exchDisp}</span>}
+                    </div>
+                    <div className="text-xs text-gray-300 truncate">
+                      {s.shortname || s.longname || ''} {s.currency ? `• ${s.currency}` : ''} {s.quoteType ? `• ${s.quoteType}` : ''}
+                    </div>
+                  </button>
+                ))}
+                {searchLoading && (
+                  <div className="px-3 py-2 text-xs text-gray-400">Searching...</div>
+                )}
+              </div>
+            )}
+            {showSuggestions && !searchLoading && suggestions.length === 0 && symbolInput.trim().length >= 2 && inputType === 'name' && (
+              <div className="mt-2 text-xs text-gray-400">No matches yet – refine your search.</div>
+            )}
           </div>
           <button
             onClick={handleGetInfoClick}
@@ -158,27 +331,31 @@ const TickerInfoPage: React.FC = () => {
             <div>
               <p className="text-sm mb-1">{error}</p>
               {/* Show suggestions if present in data (from backend) */}
-              {data && Array.isArray((data as any).suggestions) && (data as any).suggestions.length > 0 && (
+              {(data && Array.isArray((data as any).suggestions) && (data as any).suggestions.length > 0) || (showSuggestions && suggestions.length > 0) ? (
                 <div className="mt-2">
                   <p className="text-sm text-indigo-200 mb-2">Did you mean one of these tickers?</p>
                   <ul className="space-y-1">
-                    {(data as any).suggestions.map((s: any) => (
-                      <li key={s.symbol}>
-                        <button
-                          className="px-3 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white text-sm font-semibold mr-2 mb-1 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                          onClick={() => {
-                            setSymbolInput(s.symbol);
-                            setData(null); setError(null);
-                            setTickerToFetch(s.symbol);
-                          }}
-                        >
-                          {s.symbol} <span className="text-indigo-200">{s.shortname || s.longname || s.name || ''} {s.exchDisp ? `(${s.exchDisp})` : ''}</span>
-                        </button>
-                      </li>
-                    ))}
+                    {((data as any)?.suggestions || suggestions).map((s: any) => {
+                      if (!s || !s.symbol) return null;
+                      return (
+                        <li key={s.symbol}>
+                          <button
+                            className="px-3 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white text-sm font-semibold mr-2 mb-1 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                            onClick={() => {
+                              setSymbolInput(s.symbol.toUpperCase());
+                              setData(null); setError(null);
+                              setShowSuggestions(false);
+                              setTickerToFetch(s.symbol.toUpperCase());
+                            }}
+                          >
+                            {s.symbol} <span className="text-indigo-200">{s.shortname || s.longname || s.name || ''} {s.exchDisp ? `(${s.exchDisp})` : ''}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         )}

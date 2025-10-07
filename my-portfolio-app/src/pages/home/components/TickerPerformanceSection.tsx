@@ -1,7 +1,7 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../../AuthContext';
-import { fetchTickerPerformance } from '../../../services/portfolioService';
+import { fetchTickerPerformance, fetchPortfolioVolatilitySeries } from '../../../services/portfolioService';
 import GenericPerformanceSection, { ValueType } from '../../../components/PerformanceSection';
 import { Listbox, Transition } from '@headlessui/react';
 import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
@@ -27,6 +27,9 @@ const TickerPerformanceSection: React.FC<TickerPerformanceSectionProps> = ({
   const { isLoggedIn, idToken } = useAuth();
   const [valueType, setValueType] = React.useState<ValueType>('pct_from_first');
   const [dateRange, setDateRange] = React.useState<{start: string; end: string} | null>(null);
+  // Volatility overlay options
+  const [showVolatility, setShowVolatility] = React.useState<boolean>(false);
+  const [volatilityWindow, setVolatilityWindow] = React.useState<string>('30');
 
   // Fetch performance data for selected tickers
   const tickerPerformanceQueries = useQuery({
@@ -60,37 +63,56 @@ const TickerPerformanceSection: React.FC<TickerPerformanceSectionProps> = ({
     enabled: !!selectedPortfolio && selectedTickers.length > 0 && !!isLoggedIn && !!idToken
   });
 
+  // Fetch volatility time-series for optional overlay
+  const volatilityQuery = useQuery({
+    queryKey: ['tickerVolatilitySeries', selectedPortfolio, volatilityWindow, isLoggedIn, idToken],
+    queryFn: async () => {
+      if (!selectedPortfolio || !isLoggedIn || !idToken) return [];
+      try {
+        const data = await fetchPortfolioVolatilitySeries(selectedPortfolio, { window: volatilityWindow });
+        return Array.isArray(data) ? data : [];
+      } catch (e) {
+        console.error('Error fetching volatility series', e);
+        return [];
+      }
+    },
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken && showVolatility,
+  });
+
   // Filter data by date range
   const filteredSeries = React.useMemo(() => {
-    if (!tickerPerformanceQueries.data) return [];
-    
-    return tickerPerformanceQueries.data.map(series => ({
+    const raw = Array.isArray(tickerPerformanceQueries.data) ? tickerPerformanceQueries.data : [];
+    return raw.map(series => ({
       ...series,
-      data: dateRange 
-        ? series.data.filter(point => {
-            const pointDate = new Date(point.date);
-            const startDate = new Date(dateRange.start);
-            const endDate = new Date(dateRange.end);
-            return pointDate >= startDate && pointDate <= endDate;
-          })
-        : series.data
+      data: Array.isArray(series.data)
+        ? (dateRange
+            ? series.data.filter(point => {
+                try {
+                  const pointDate = new Date(point.date);
+                  const startDate = new Date(dateRange.start);
+                  const endDate = new Date(dateRange.end);
+                  return pointDate >= startDate && pointDate <= endDate;
+                } catch (e) {
+                  return false;
+                }
+              })
+            : series.data)
+        : []
     }));
   }, [tickerPerformanceQueries.data, dateRange]);
 
   // Compute date range bounds
   const dateBounds = React.useMemo(() => {
-    if (!tickerPerformanceQueries.data || tickerPerformanceQueries.data.length === 0) {
+    const raw = Array.isArray(tickerPerformanceQueries.data) ? tickerPerformanceQueries.data : [];
+    if (raw.length === 0) {
       const today = new Date().toISOString().split('T')[0];
       return { minDate: today, maxDate: today };
     }
-    
-    const allDates = tickerPerformanceQueries.data.flatMap(series => 
-      series.data.map(point => point.date)
-    ).sort();
-    
+    const allDates = raw.flatMap(series => (Array.isArray(series.data) ? series.data.map(point => point.date) : [])).filter(Boolean).sort();
+    const today = new Date().toISOString().split('T')[0];
     return {
-      minDate: allDates[0] || new Date().toISOString().split('T')[0],
-      maxDate: allDates[allDates.length - 1] || new Date().toISOString().split('T')[0]
+      minDate: allDates.length > 0 ? allDates[0] : today,
+      maxDate: allDates.length > 0 ? allDates[allDates.length - 1] : today
     };
   }, [tickerPerformanceQueries.data]);
 
@@ -109,6 +131,21 @@ const TickerPerformanceSection: React.FC<TickerPerformanceSectionProps> = ({
     // Show summary of selected tickers
     return `${filteredSeries.length} ticker${filteredSeries.length === 1 ? '' : 's'} selected`;
   }, [filteredSeries]);
+
+  // If volatility overlay is enabled and we have data, append it as an additional series
+  const finalSeries = React.useMemo(() => {
+    const base = Array.isArray(filteredSeries) ? filteredSeries : [];
+    if (showVolatility && volatilityQuery.data && Array.isArray(volatilityQuery.data) && volatilityQuery.data.length > 0) {
+      const volData = volatilityQuery.data.map(pt => ({ date: pt.date, value: pt.volatility !== null && typeof pt.volatility === 'number' ? pt.volatility * 100 : 0, pct: pt.volatility !== null && typeof pt.volatility === 'number' ? pt.volatility * 100 : 0, pct_from_first: pt.volatility !== null && typeof pt.volatility === 'number' ? pt.volatility * 100 : 0 }));
+      const volSeries = {
+        id: 'volatility',
+        name: `Volatility (${volatilityWindow})`,
+        data: volData,
+      } as any;
+      return [...base, volSeries];
+    }
+    return base;
+  }, [filteredSeries, showVolatility, volatilityQuery.data, volatilityWindow]);
 
   // Ticker selector component
   const tickerSelector = (
@@ -172,6 +209,29 @@ const TickerPerformanceSection: React.FC<TickerPerformanceSectionProps> = ({
           </Transition>
         </div>
       </Listbox>
+      {/* Volatility toggle and window selector */}
+      <div className="flex items-center gap-2 ml-4">
+        <label className="flex items-center gap-2 text-sm text-gray-300">
+          <input
+            type="checkbox"
+            checked={showVolatility}
+            onChange={(e) => setShowVolatility(e.target.checked)}
+            className="h-4 w-4 rounded bg-gray-600"
+          />
+          <span>Volatility</span>
+        </label>
+        <select
+          value={volatilityWindow}
+          onChange={(e) => setVolatilityWindow(e.target.value)}
+          className="bg-gray-700 text-white rounded px-2 py-1 text-sm"
+          aria-label="Volatility window"
+        >
+          <option value="30">30</option>
+          <option value="90">90</option>
+          <option value="252">252</option>
+          <option value="ewm">ewm</option>
+        </select>
+      </div>
     </div>
   );
 
@@ -184,19 +244,20 @@ const TickerPerformanceSection: React.FC<TickerPerformanceSectionProps> = ({
     );
   }
 
+
   return (
     <GenericPerformanceSection
-      title="Asset Performance Comparison"
+      title=""
       valueType={valueType}
       onValueTypeChange={setValueType}
       data={[]} // Not used in multi-line mode
-      series={filteredSeries}
+      series={finalSeries}
       dateRange={dateRange}
       onDateRangeChange={setDateRange}
       minDate={dateBounds.minDate}
       maxDate={dateBounds.maxDate}
       onSetYTD={setYTD}
-      loading={tickerPerformanceQueries.isLoading}
+      loading={tickerPerformanceQueries.isLoading || (showVolatility && volatilityQuery.isLoading)}
       notEnoughDataMessage="Not enough data to display asset performance comparison"
       finalValue={finalValue}
       selector={tickerSelector}

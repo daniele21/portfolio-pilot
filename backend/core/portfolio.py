@@ -447,37 +447,37 @@ def get_overall_asset_allocation(portfolio_name):
     return allocation
 
 
-def get_asset_allocation_by_quote_type(portfolio_name):
-    """
-    Returns a dict: {quoteType: allocation_percentage, ...} for all tickers in the portfolio, using quoteType from ticker_info.
-    The allocation is the percentage of each quoteType's value over the total portfolio value.
-    """
-    from db.database import get_transactions  # Local import to avoid circular import
-    txs = get_transactions(portfolio_name)
-    positions = aggregate_positions(txs)
-    allocation = {}
-    total_value = 0.0
-    temp = {}
-    for ticker, qty in positions.items():
-        if qty == 0:
-            continue
-        try:
-            data, _ = get_ticker_data(ticker)
-            info = (data or {}).get('info', {})
-            price = info.get('regularMarketPrice') or 0
-            quote_type = info.get('quoteType') or 'Unknown'
-        except Exception:
-            price = 0
-            quote_type = 'Unknown'
-        value = price * qty
-        total_value += value
-        if quote_type not in temp:
-            temp[quote_type] = 0.0
-        temp[quote_type] += value
-    # Now calculate allocation percentage for each quoteType
-    for quote_type, value in temp.items():
-        allocation[quote_type] = (value / total_value * 100) if total_value else 0.0
-    return allocation
+# def get_asset_allocation_by_quote_type(portfolio_name):
+#     """
+#     Returns a dict: {quoteType: allocation_percentage, ...} for all tickers in the portfolio, using quoteType from ticker_info.
+#     The allocation is the percentage of each quoteType's value over the total portfolio value.
+#     """
+#     from db.database import get_transactions  # Local import to avoid circular import
+#     txs = get_transactions(portfolio_name)
+#     positions = aggregate_positions(txs)
+#     allocation = {}
+#     total_value = 0.0
+#     temp = {}
+#     for ticker, qty in positions.items():
+#         if qty == 0:
+#             continue
+#         try:
+#             data, _ = get_ticker_data(ticker)
+#             info = (data or {}).get('info', {})
+#             price = info.get('regularMarketPrice') or 0
+#             quote_type = info.get('quoteType') or 'Unknown'
+#         except Exception:
+#             price = 0
+#             quote_type = 'Unknown'
+#         value = price * qty
+#         total_value += value
+#         if quote_type not in temp:
+#             temp[quote_type] = 0.0
+#         temp[quote_type] += value
+#     # Now calculate allocation percentage for each quoteType
+#     for quote_type, value in temp.items():
+#         allocation[quote_type] = (value / total_value * 100) if total_value else 0.0
+#     return allocation
 
 
 def get_asset_allocation_by_category_and_risk(portfolio_name):

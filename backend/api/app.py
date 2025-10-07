@@ -9,7 +9,7 @@ This file now only:
 
 import sys
 import os
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from flask import Flask, jsonify, request
 
 from api.utils import register_request_logging
@@ -51,7 +51,15 @@ def create_app():
         data_is_stale = True
         if cached_data and last_updated:
             try:
-                if datetime.now() - last_updated <= CACHE_DURATION:
+                # Coerce both times to UTC-aware datetimes before subtracting.
+                # Some stored timestamps may be timezone-aware (have tzinfo),
+                # others may be naive (no tzinfo). Treat naive as UTC.
+                if last_updated.tzinfo is None:
+                    last_updated_utc = last_updated.replace(tzinfo=timezone.utc)
+                else:
+                    last_updated_utc = last_updated.astimezone(timezone.utc)
+                now_utc = datetime.now(timezone.utc)
+                if now_utc - last_updated_utc <= CACHE_DURATION:
                     data_is_stale = False
             except Exception:
                 data_is_stale = True
@@ -72,6 +80,13 @@ def create_app():
         app.register_blueprint(api_bp)
     except Exception:  # pragma: no cover
         app.logger.exception("Failed to register api.routes blueprint")
+
+    # Debug: list routes (helps diagnose missing /api/tickers/search)
+    try:
+        for rule in app.url_map.iter_rules():
+            app.logger.info(f"[ROUTE] {sorted(rule.methods)} -> {rule.rule}")
+    except Exception:
+        app.logger.warning("Could not list routes for debug")
 
     # Simple health endpoint (useful for tests / deployment checks)
     @app.route('/api/health', methods=['GET'])

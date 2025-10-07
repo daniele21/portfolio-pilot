@@ -87,24 +87,64 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({
       });
     }
 
+    // If one of the series is volatility, create a dedicated right-side price scale
+    const hasVolatilitySeries = series.some(s => s.id === 'volatility');
+    if (hasVolatilitySeries) {
+      try {
+        // Create a new named price scale for volatility (right side)
+        (chart as any).addPriceScale('volatility', {
+          position: 'right',
+          scaleMargins: { top: 0.12, bottom: 0.12 },
+          borderColor: 'rgba(161,161,170,0.2)'
+        });
+        // Ensure the newly created price scale is visible and configured
+        try {
+          chart.priceScale('volatility').applyOptions({
+            visible: true,
+            borderColor: 'rgba(161,161,170,0.2)',
+            scaleMargins: { top: 0.12, bottom: 0.12 },
+            borderVisible: true,
+            ticksVisible: true
+          } as any);
+        } catch (e) {
+          // best-effort: ignore if API differs
+        }
+      } catch (e) {
+        // ignore if the price scale already exists or API not available
+      }
+    }
+
     series.forEach((s, idx) => {
-      const line = chart.addLineSeries({
+      const isVol = s.id === 'volatility';
+      const seriesOptions: any = {
         color: s.color || colors[idx % colors.length],
-        lineWidth: 2,
+        lineWidth: isVol ? 2 : 2,
         priceLineVisible: false,
         lastValueVisible: true,
-        title: s.name,
-        // Format as percentage if we're normalizing (matching PerformanceChart behavior)
-        priceFormat: normalizeToZero ? {
+        title: s.name
+      };
+      // Attach volatility to its own price scale and format as percent
+      if (isVol) {
+        seriesOptions.priceScaleId = 'volatility';
+        seriesOptions.priceFormat = {
           type: 'custom',
-          formatter: (price: number) => `${price.toFixed(1)}%`, // Same format as PerformanceChart
+          formatter: (price: number) => `${price.toFixed(2)}%`,
+          minMove: 0.01
+        };
+      } else {
+        // Use percentage formatting when normalizing, otherwise numeric price formatting
+        seriesOptions.priceFormat = normalizeToZero ? {
+          type: 'custom',
+          formatter: (price: number) => `${price.toFixed(1)}%`,
           minMove: 0.01
         } : {
           type: 'price',
           precision: 2,
           minMove: 0.01
-        }
-      });
+        };
+      }
+
+      const line = chart.addLineSeries(seriesOptions);
 
       // Convert and normalize data to proper format for lightweight-charts
       let chartData: LineData[] = s.data

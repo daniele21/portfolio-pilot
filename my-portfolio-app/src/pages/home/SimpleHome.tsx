@@ -7,8 +7,11 @@ import {
   fetchPortfolioAllocation,
   fetchPortfolioReturnsKpis,
   fetchPortfolioVolatility,
-  fetchPortfolioPerformance
+  fetchPortfolioVolatilitySeries,
+  fetchPortfolioPerformance,
+  fetchPortfolioTargets
 } from '../../services/portfolioService';
+import { fetchPortfolioRisk } from '../../services/portfolioService';
 import PortfolioSelector from './components/PortfolioSelector';
 import TickerPerformanceSection from './components/TickerPerformanceSection';
 import ProjectOverview from './modules/ProjectOverview';
@@ -22,9 +25,9 @@ import { Listbox, Transition } from '@headlessui/react';
 import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
 
 const VOLATILITY_PRESETS = [
-  { label: '30d', value: '30' },
-  { label: '90d', value: '90' },
-  { label: '252d', value: '252' },
+  { label: '30 days', value: '30' },
+  { label: '90 days', value: '90' },
+  { label: '1 year', value: '252' },
   { label: 'EWMA', value: 'ewm' }
 ];
 
@@ -32,8 +35,10 @@ const SimpleHome: React.FC = () => {
   const { isLoggedIn, idToken } = useAuth();
   const [selectedPortfolio, setSelectedPortfolio] = React.useState<string | null>(null);
   const [maskPortfolioValue, setMaskPortfolioValue] = React.useState(true);
-  const [allocationView, setAllocationView] = React.useState<'overall' | 'quoteType' | 'category' | 'risk'>('overall');
+  // allocationView options (quoteType removed): overall | asset_type | category | risk
+  const [allocationView, setAllocationView] = React.useState<'overall' | 'asset_type' | 'category' | 'risk'>('overall');
   const [volatilityWindow, setVolatilityWindow] = React.useState<string>(VOLATILITY_PRESETS[0].value);
+  const [showVolatility, setShowVolatility] = React.useState<boolean>(false);
   
   // Performance section state
   // Default the value type to 'Performance' view (pct_from_first) so the select shows "Performance" by default
@@ -82,12 +87,21 @@ const SimpleHome: React.FC = () => {
   });
 
   // Fetch allocation data
+  const backendGrouping = allocationView === 'asset_type' ? 'asset_type' : allocationView;
   const {
     data: allocationData
   } = useQuery({
-    queryKey: ['portfolioAllocation', selectedPortfolio, allocationView, isLoggedIn, idToken],
-    queryFn: () => selectedPortfolio ? fetchPortfolioAllocation(selectedPortfolio, allocationView) : null,
+    queryKey: ['portfolioAllocation', selectedPortfolio, backendGrouping, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioAllocation(selectedPortfolio, backendGrouping as any) : null,
     enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
+  });
+
+  // Fetch saved targets (asset_type & risk) for selected portfolio for comparison overlay
+  const { data: savedTargets } = useQuery({
+    queryKey: ['portfolioTargets', selectedPortfolio, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioTargets(selectedPortfolio) : null,
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken,
+    staleTime: 5 * 60 * 1000
   });
 
   // Fetch returns KPIs
@@ -107,6 +121,22 @@ const SimpleHome: React.FC = () => {
     queryKey: ['portfolioVolatility', selectedPortfolio, volatilityWindow, isLoggedIn, idToken],
     queryFn: () => selectedPortfolio ? fetchPortfolioVolatility(selectedPortfolio, { window: volatilityWindow }) : null,
     enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
+  });
+
+  // Fetch volatility time-series for plotting alongside performance (series param)
+  const {
+    data: portfolioVolatilitySeries = []
+  } = useQuery({
+    queryKey: ['portfolioVolatilitySeries', selectedPortfolio, volatilityWindow, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioVolatilitySeries(selectedPortfolio, { window: volatilityWindow }) : [],
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken
+  });
+
+  const { data: portfolioRisk } = useQuery({
+    queryKey: ['portfolioRisk', selectedPortfolio, isLoggedIn, idToken],
+    queryFn: () => selectedPortfolio ? fetchPortfolioRisk(selectedPortfolio) : null,
+    enabled: !!selectedPortfolio && !!isLoggedIn && !!idToken,
+    staleTime: 24 * 60 * 60 * 1000 // 24 hours
   });
 
   // Fetch portfolio performance (historical series)
@@ -145,8 +175,8 @@ const SimpleHome: React.FC = () => {
   // For SunburstChart, convert allocationData to assets-like array for compatibility
   const allocationAssets = React.useMemo(() => {
     if (!allocationData?.allocation) return [];
-    
-    if (allocationView === 'overall') {
+    const viewKey = backendGrouping; // actual backend grouping used
+    if (viewKey === 'overall') {
       if (!Array.isArray(allocationData.allocation)) return [];
       return allocationData.allocation.map((item: any) => ({
         id: item.ticker,
@@ -158,34 +188,41 @@ const SimpleHome: React.FC = () => {
         category: item.category || 'Unknown',
         region: item.region || 'Unknown',
       }));
-    } else {
-      if (typeof allocationData.allocation !== 'object' || Array.isArray(allocationData.allocation)) return [];
-      return Object.entries(allocationData.allocation).map(([key, val]: [string, any]) => {
-        // The backend may return grouped allocations as either a number (pct)
-        // or an object like { value, pct, tickers }. Handle both shapes.
-        const isObj = val && typeof val === 'object' && ('pct' in val || 'value' in val);
-        const pct = isObj ? (typeof val.pct === 'number' ? val.pct : (val.value ?? 0)) : (typeof val === 'number' ? val : 0);
-        const value = isObj ? (typeof val.value === 'number' ? val.value : pct) : pct;
-        return {
-          id: key,
-          symbol: key,
-          name: key,
-          value: value,
-          quantity: 1,
-          allocation_pct: pct,
-          category: allocationView === 'quoteType' ? 'Type' : (allocationView === 'category' ? 'Category' : (allocationView === 'risk' ? 'Risk' : 'Group')),
-          region: 'Unknown',
-          meta: isObj ? val : undefined,
-        };
-      });
     }
-  }, [allocationData, allocationView]);
+    if (typeof allocationData.allocation !== 'object' || Array.isArray(allocationData.allocation)) return [];
+    return Object.entries(allocationData.allocation).map(([key, val]: [string, any]) => {
+      const isObj = val && typeof val === 'object' && ('pct' in val || 'value' in val);
+      const pct = isObj ? (typeof val.pct === 'number' ? val.pct : (val.value ?? 0)) : (typeof val === 'number' ? val : 0);
+      const value = isObj ? (typeof val.value === 'number' ? val.value : pct) : pct;
+      return {
+        id: key,
+        symbol: key,
+        name: key,
+        value: value,
+        quantity: 1,
+        allocation_pct: pct,
+  category: viewKey === 'asset_type' ? 'Type' : (viewKey === 'category' ? 'Category' : (viewKey === 'risk' ? 'Risk' : 'Group')),
+        region: 'Unknown',
+        meta: isObj ? val : undefined,
+      };
+    });
+  }, [allocationData, backendGrouping]);
 
   // Performance section logic
   const availableTickers = React.useMemo(() => {
     if (!allocationAssets || allocationView !== 'overall') return [];
     return allocationAssets.map(asset => ({ id: asset.symbol, name: asset.name || asset.symbol }));
   }, [allocationAssets, allocationView]);
+
+  // Set best performing ticker as default selection
+  React.useEffect(() => {
+    if (kpis?.net_performance_tickers?.length > 0 && selectedTickers.length === 0 && availableTickers.length > 0) {
+      const bestPerformer = kpis.net_performance_tickers[0];
+      if (bestPerformer && availableTickers.some(ticker => ticker.id === bestPerformer.ticker)) {
+        setSelectedTickers([bestPerformer.ticker]);
+      }
+    }
+  }, [kpis?.net_performance_tickers, selectedTickers.length, availableTickers]);
 
   // Filter portfolio performance data by date range
   const filteredPerformanceData = React.useMemo(() => {
@@ -295,21 +332,39 @@ const SimpleHome: React.FC = () => {
   // Combined series: portfolio + benchmarks
   const combinedSeriesForChart = React.useMemo(() => {
     const portfolioSeries = [{ id: 'portfolio', name: 'Portfolio', data: filteredPerformanceData }];
-    return portfolioSeries.concat(benchmarkSeries);
-  }, [filteredPerformanceData, benchmarkSeries]);
+    const base = portfolioSeries.concat(benchmarkSeries);
+    // Append volatility series as an overlay (converted to percentage values)
+    if (showVolatility && Array.isArray(portfolioVolatilitySeries) && portfolioVolatilitySeries.length > 0) {
+      // align by date range and map to chart point shape { time, value }
+      const volData = portfolioVolatilitySeries.map(pt => ({ date: pt.date, volatility: pt.volatility }));
+      // Create a series compatible with GenericPerformanceSection: data points use date+pct-like name
+      base.push({
+        id: 'volatility',
+        name: `Volatility (${volatilityWindow})`,
+        data: volData.map(p => ({
+          date: p.date,
+          // Chart expects numeric 'value' (required). Provide 0 when no value to satisfy type.
+          value: p.volatility !== null && typeof p.volatility === 'number' ? p.volatility * 100 : 0,
+          pct: p.volatility !== null && typeof p.volatility === 'number' ? p.volatility * 100 : 0,
+          pct_from_first: p.volatility !== null && typeof p.volatility === 'number' ? p.volatility * 100 : 0
+        }))
+      });
+    }
+    return base;
+  }, [filteredPerformanceData, benchmarkSeries, portfolioVolatilitySeries, volatilityWindow, showVolatility]);
 
   // Benchmarks selector UI
   const benchmarksSelector = (
-    <div className="flex items-center gap-2">
-      <span className="text-sm text-gray-300">Benchmarks:</span>
+    <div className="flex items-center gap-1">
+      <span className="text-xs text-gray-300 hidden sm:inline">Benchmarks:</span>
       <Listbox value={selectedBenchmarks} onChange={setSelectedBenchmarks} multiple>
         <div className="relative">
-          <Listbox.Button className="relative w-64 cursor-default rounded-lg bg-gray-700 py-2 pl-3 pr-10 text-left shadow-md sm:text-sm">
+          <Listbox.Button className="relative w-32 cursor-default rounded-md bg-gray-700 py-1 pl-2 pr-8 text-left shadow-md text-xs">
             <span className="block truncate text-white">
-              {selectedBenchmarks.length === 0 ? 'Select benchmarks...' : `${selectedBenchmarks.length} selected`}
+              {selectedBenchmarks.length === 0 ? 'Benchmarks' : `${selectedBenchmarks.length} selected`}
             </span>
-            <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
-              <ChevronUpDownIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
+            <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-1">
+              <ChevronUpDownIcon className="h-4 w-4 text-gray-400" aria-hidden="true" />
             </span>
           </Listbox.Button>
           <Transition as={React.Fragment} leave="transition ease-in duration-100" leaveFrom="opacity-100" leaveTo="opacity-0">
@@ -382,26 +437,18 @@ const SimpleHome: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-      <div className="max-w-7xl mx-auto p-6 space-y-8">
-        {/* Professional Header with Client Info */}
-        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+      <div className="max-w-7xl mx-auto p-4 space-y-6">
+        {/* Compact Header */}
+        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-lg p-3">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-6">
-              <div className="bg-gradient-to-br from-blue-500 to-indigo-600 p-3 rounded-xl">
-                <ChartBarIcon className="h-8 w-8 text-white" />
+            <div className="flex items-center gap-2">
+              <div className="bg-gradient-to-br from-blue-500 to-indigo-600 p-1.5 rounded-md">
+                <ChartBarIcon className="h-4 w-4 text-white" />
               </div>
-              <div>
-                <h1 className="text-2xl font-bold text-white">Portfolio Analysis</h1>
-                <p className="text-slate-300 mt-1">Professional Investment Management Dashboard</p>
-              </div>
+              <h1 className="text-lg font-semibold text-white">Portfolio Dashboard</h1>
             </div>
-            <div className="flex items-center space-x-4">
-              {/* control moved into ProjectOverview */}
-            </div>
-          </div>
-          
-          {/* Portfolio Selector */}
-          <div className="mt-6 p-4 bg-white/5 rounded-xl">
+            
+            {/* Inline Portfolio Selector */}
             <PortfolioSelector
               portfolioNames={portfolioNames}
               selectedPortfolio={selectedPortfolio}
@@ -412,65 +459,82 @@ const SimpleHome: React.FC = () => {
         </div>
 
         {selectedPortfolio && (
-          <div className="space-y-8">
-            {/* Portfolio Summary Dashboard (modularized) */}
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              <ProjectOverview
-                performanceDerived={performanceDerived}
-                maskPortfolioValue={maskPortfolioValue}
-                returnsKpis={returnsKpis}
-                kpis={kpis}
-                toggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
-              />
+          <div className="space-y-6">
+            {/* Portfolio Summary Dashboard - 5-Column Layout */}
+            <div className="grid grid-cols-1 xl:grid-cols-7 gap-4 items-stretch">
+              {/* Project Overview - 2/5 width (half) */}
+              <div className="xl:col-span-3">
+                <ProjectOverview
+                  performanceDerived={performanceDerived}
+                  maskPortfolioValue={maskPortfolioValue}
+                  returnsKpis={returnsKpis}
+                  kpis={kpis}
+                  toggleMaskPortfolioValue={() => setMaskPortfolioValue(v => !v)}
+                />
+              </div>
 
-              <RiskAnalysis
-                volatilityWindow={volatilityWindow}
-                volatilityValue={portfolioVolatility?.volatility}
-                setVolatilityWindow={setVolatilityWindow}
-                presets={VOLATILITY_PRESETS}
-              />
+              {/* Risk Analysis - 1/5 width */}
+              <div className="xl:col-span-2">
+                <RiskAnalysis
+                  volatilityWindow={volatilityWindow}
+                  volatilityValue={portfolioVolatility?.volatility}
+                  setVolatilityWindow={setVolatilityWindow}
+                  presets={VOLATILITY_PRESETS}
+                  llmRisk={portfolioRisk?.report}
+                />
+              </div>
 
-              <AssetAllocationSummary
-                allocationAssets={allocationAssets}
-                allocationView={allocationView}
-                setAllocationView={setAllocationView}
-              />
-            </div>
-
-            {/* Performance Chart Section (modularized) */}
-            <div className="lg:col-span-4">
-              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-lg font-semibold text-white">Portfolio Performance</h2>
-                  <div className="flex items-center space-x-4">
-                    {benchmarksSelector}
-                  </div>
-                </div>
-
-                <div className="bg-white/5 rounded-xl p-4">
-                  <PerformanceChartSection
-                    title="Portfolio Performance"
-                    valueType={performanceValueType}
-                    onValueTypeChange={setPerformanceValueType}
-                    data={filteredPerformanceData}
-                    series={combinedSeriesForChart}
-                    dateRange={performanceDateRange}
-                    onDateRangeChange={setPerformanceDateRange}
-                    minDate={performanceDateBounds.minDate}
-                    maxDate={performanceDateBounds.maxDate}
-                    onSetYTD={setPerformanceYTD}
-                    loading={false}
-                    finalValue={finalPerformanceValue}
-                  />
-                </div>
+              {/* Asset Allocation - 2/5 width */}
+              <div className="xl:col-span-2">
+                <AssetAllocationSummary
+                  allocationAssets={allocationAssets}
+                  allocationView={allocationView as any}
+                  setAllocationView={(v) => setAllocationView(v)}
+                  targets={savedTargets || undefined}
+                />
               </div>
             </div>
 
-            {/* Holdings Analysis */}
-            <div className="lg:col-span-4 bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
-              <h2 className="text-lg font-semibold text-white mb-6">Holdings Analysis</h2>
+            {/* Compact Performance Chart Section */}
+            <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-xl p-4 shadow-lg hover:shadow-xl transition-all duration-300 min-h-[420px]">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-1 h-4 bg-gradient-to-b from-blue-400 to-blue-600 rounded-full"></div>
+                  <h2 className="text-lg font-bold text-white">Performance</h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  {benchmarksSelector}
+                </div>
+              </div>
+
+              <PerformanceChartSection
+                title=""
+                valueType={performanceValueType}
+                onValueTypeChange={setPerformanceValueType}
+                data={filteredPerformanceData}
+                series={combinedSeriesForChart}
+                showVolatility={showVolatility}
+                setShowVolatility={setShowVolatility}
+                volatilityWindow={volatilityWindow}
+                setVolatilityWindow={setVolatilityWindow}
+                dateRange={performanceDateRange}
+                onDateRangeChange={setPerformanceDateRange}
+                minDate={performanceDateBounds.minDate}
+                maxDate={performanceDateBounds.maxDate}
+                onSetYTD={setPerformanceYTD}
+                loading={false}
+                finalValue={finalPerformanceValue}
+              />
+            </div>
+
+            {/* Compact Holdings Analysis */}
+            <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-xl p-6 shadow-lg hover:shadow-xl transition-all duration-300">
+              <div className="flex items-center gap-2 mb-6">
+                <div className="w-1 h-5 bg-gradient-to-b from-purple-400 to-purple-600 rounded-full"></div>
+                <h2 className="text-lg font-bold text-white">Holdings Analysis</h2>
+              </div>
               
-              <div className="bg-white/5 rounded-xl p-4">
+              <div className="bg-gradient-to-br from-slate-800/30 to-slate-700/20 rounded-xl p-4 border border-white/10">
                 <TickerPerformanceSection
                   selectedPortfolio={selectedPortfolio}
                   availableTickers={availableTickers}
@@ -480,68 +544,77 @@ const SimpleHome: React.FC = () => {
               </div>
             </div>
 
-            {/* Professional Advisor Actions */}
-            <div className="lg:col-span-4 grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Client Management */}
-              <div className="bg-gradient-to-br from-blue-500/10 to-indigo-600/10 backdrop-blur-xl border border-blue-500/20 rounded-2xl p-6">
-                <div className="flex items-center space-x-3 mb-4">
-                  <div className="bg-blue-500/20 p-2 rounded-lg">
-                    <CurrencyDollarIcon className="h-5 w-5 text-blue-400" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-white">Client Actions</h3>
-                </div>
-                <div className="space-y-3">
-                  <button className="w-full text-left bg-white/5 hover:bg-white/10 rounded-lg p-3 transition-colors">
-                    <div className="text-sm font-medium text-white">Schedule Review</div>
-                    <div className="text-xs text-slate-400">Plan client meeting</div>
-                  </button>
-                  <button className="w-full text-left bg-white/5 hover:bg-white/10 rounded-lg p-3 transition-colors">
-                    <div className="text-sm font-medium text-white">Generate Report</div>
-                    <div className="text-xs text-slate-400">Create client summary</div>
-                  </button>
-                  <button className="w-full text-left bg-white/5 hover:bg-white/10 rounded-lg p-3 transition-colors">
-                    <div className="text-sm font-medium text-white">Add Note</div>
-                    <div className="text-xs text-slate-400">Log interaction</div>
-                  </button>
-                </div>
+            {/* Compact Advisory Tools */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <div className="w-1 h-5 bg-gradient-to-b from-cyan-400 to-cyan-600 rounded-full"></div>
+                <h2 className="text-xl font-bold text-white">Advisory Tools</h2>
               </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Client Management */}
+                <div className="bg-gradient-to-br from-blue-500/10 to-indigo-600/10 backdrop-blur-xl border border-blue-500/20 rounded-xl p-6 shadow-lg hover:shadow-xl transition-all duration-300">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="bg-blue-500/20 p-2 rounded-lg">
+                      <CurrencyDollarIcon className="h-5 w-5 text-blue-400" />
+                    </div>
+                    <h3 className="text-lg font-bold text-white">Client Actions</h3>
+                  </div>
+                  <div className="space-y-3">
+                    <button className="w-full text-left bg-white/5 hover:bg-white/15 rounded-lg p-3 transition-all duration-200 border border-white/10">
+                      <div className="text-sm font-semibold text-white">Schedule Review</div>
+                      <div className="text-xs text-slate-400">Plan meeting</div>
+                    </button>
+                    <button className="w-full text-left bg-white/5 hover:bg-white/15 rounded-lg p-3 transition-all duration-200 border border-white/10">
+                      <div className="text-sm font-semibold text-white">Generate Report</div>
+                      <div className="text-xs text-slate-400">Create summary</div>
+                    </button>
+                  </div>
+                </div>
 
-              {/* Risk Assessment */}
-              <div className="bg-gradient-to-br from-amber-500/10 to-orange-600/10 backdrop-blur-xl border border-amber-500/20 rounded-2xl p-6">
-                <div className="flex items-center space-x-3 mb-4">
-                  <div className="bg-amber-500/20 p-2 rounded-lg">
-                    <ArrowTrendingUpIcon className="h-5 w-5 text-amber-400" />
+                {/* Risk Metrics */}
+                <div className="bg-gradient-to-br from-amber-500/10 to-orange-600/10 backdrop-blur-xl border border-amber-500/20 rounded-xl p-6 shadow-lg hover:shadow-xl transition-all duration-300">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="bg-amber-500/20 p-2 rounded-lg">
+                      <ArrowTrendingUpIcon className="h-5 w-5 text-amber-400" />
+                    </div>
+                    <h3 className="text-lg font-bold text-white">Risk Metrics</h3>
                   </div>
-                  <h3 className="text-lg font-semibold text-white">Risk Analysis</h3>
+                  <div className="space-y-3">
+                    <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+                      <div className="text-xs text-slate-400">Portfolio Beta</div>
+                      <div className="text-xl font-bold text-amber-400">1.2</div>
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+                      <div className="text-xs text-slate-400">Sharpe Ratio</div>
+                      <div className="text-xl font-bold text-amber-400">0.85</div>
+                    </div>
+                  </div>
                 </div>
-                <div className="space-y-3">
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <div className="text-sm font-medium text-white">Beta</div>
-                    <div className="text-lg font-bold text-amber-400">1.2</div>
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <div className="text-sm font-medium text-white">Sharpe Ratio</div>
-                    <div className="text-lg font-bold text-amber-400">0.85</div>
-                  </div>
-                </div>
-              </div>
 
-              {/* AI Insights */}
-              <div className="bg-gradient-to-br from-green-500/10 to-emerald-600/10 backdrop-blur-xl border border-green-500/20 rounded-2xl p-6">
-                <div className="flex items-center space-x-3 mb-4">
-                  <div className="bg-green-500/20 p-2 rounded-lg">
-                    <ChartBarIcon className="h-5 w-5 text-green-400" />
+                {/* AI Insights */}
+                <div className="bg-gradient-to-br from-green-500/10 to-emerald-600/10 backdrop-blur-xl border border-green-500/20 rounded-xl p-6 shadow-lg hover:shadow-xl transition-all duration-300">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="bg-green-500/20 p-2 rounded-lg">
+                      <ChartBarIcon className="h-5 w-5 text-green-400" />
+                    </div>
+                    <h3 className="text-lg font-bold text-white">AI Insights</h3>
                   </div>
-                  <h3 className="text-lg font-semibold text-white">AI Insights</h3>
-                </div>
-                <div className="space-y-3">
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <div className="text-sm font-medium text-green-400">Rebalancing Opportunity</div>
-                    <div className="text-xs text-slate-400 mt-1">Portfolio drift detected in tech allocation</div>
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <div className="text-sm font-medium text-blue-400">Tax Harvesting</div>
-                    <div className="text-xs text-slate-400 mt-1">Potential $2,400 tax savings available</div>
+                  <div className="space-y-3">
+                    <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-1.5 h-1.5 bg-green-400 rounded-full"></div>
+                        <div className="text-xs font-semibold text-green-400">Rebalancing</div>
+                      </div>
+                      <div className="text-xs text-slate-300">Tech allocation drift detected</div>
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-1.5 h-1.5 bg-blue-400 rounded-full"></div>
+                        <div className="text-xs font-semibold text-blue-400">Tax Harvesting</div>
+                      </div>
+                      <div className="text-xs text-slate-300">$2,400 potential savings</div>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -1,3 +1,43 @@
+import { TickerSearchResultItem } from './marketDataService';
+
+const API_BASE_URL = 'http://127.0.0.1:5000';
+
+export interface GeminiSearchResponse {
+  query: string;
+  count: number;
+  results: TickerSearchResultItem[];
+  provider?: string;
+  error?: string;
+}
+
+export const geminiSearch = async (
+  query: string,
+  opts?: { model?: string; temperature?: number; max_output_tokens?: number; grounding?: boolean }
+): Promise<GeminiSearchResponse | null> => {
+  const q = (query || '').trim();
+  if (q.length < 2) return { query: q, count: 0, results: [] };
+  const base = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const params = new URLSearchParams({ q: q });
+  if (opts?.model) params.set('model', opts.model);
+  if (typeof opts?.temperature === 'number') params.set('temperature', String(opts.temperature));
+  if (typeof opts?.max_output_tokens === 'number') params.set('max_output_tokens', String(opts.max_output_tokens));
+  if (typeof opts?.grounding === 'boolean') params.set('grounding', opts.grounding ? 'true' : 'false');
+
+  const url = `${base}/api/tickers/search?${params.toString()}`;
+  try {
+    const res = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+    if (!res.ok) {
+      const txt = await res.text();
+      return { query: q, count: 0, results: [], error: `HTTP ${res.status}: ${txt}` };
+    }
+    const json = await res.json();
+    return json as GeminiSearchResponse;
+  } catch (e: any) {
+    return { query: q, count: 0, results: [], error: e?.message || 'network error' };
+  }
+};
+
+export default { geminiSearch };
 
 import { GoogleGenAI, GenerateContentResponse, GroundingChunk } from "@google/genai";
 import { GEMINI_MODEL_TEXT } from '../constants';

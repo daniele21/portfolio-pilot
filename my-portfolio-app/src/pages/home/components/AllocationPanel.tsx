@@ -4,8 +4,8 @@ import SunburstChart from '../../../components/SunburstChart';
 
 type Props = {
   assets: any[];
-  grouping: 'overall' | 'quoteType';
-  setGrouping: (g: 'overall' | 'quoteType') => void;
+  grouping: 'overall' | 'asset_type';
+  setGrouping: (g: 'overall' | 'asset_type') => void;
 };
 
 const AllocationPanel: React.FC<Props> = ({ assets, grouping, setGrouping }) => {
@@ -45,16 +45,16 @@ const AllocationPanel: React.FC<Props> = ({ assets, grouping, setGrouping }) => 
             <div className="relative">
               <input
                 type="radio"
-                checked={grouping === 'quoteType'}
-                onChange={() => setGrouping('quoteType')}
+                checked={grouping === 'asset_type'}
+                onChange={() => setGrouping('asset_type')}
                 className="sr-only"
               />
               <div className={`w-4 h-4 rounded-full border-2 transition-all duration-200 ${
-                grouping === 'quoteType' 
+                grouping === 'asset_type' 
                   ? 'border-emerald-400 bg-emerald-400' 
                   : 'border-slate-400 group-hover:border-slate-300'
               }`}>
-                {grouping === 'quoteType' && (
+                {grouping === 'asset_type' && (
                   <div className="w-2 h-2 bg-white rounded-full absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
                 )}
               </div>

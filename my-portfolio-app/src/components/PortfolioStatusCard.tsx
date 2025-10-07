@@ -1,15 +1,16 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { fetchPortfolioStatusLive } from '../services/portfolioService';
 import { PortfolioStatusResponse } from '../types';
-import { idbGet, idbSet, idbDel } from '../utils/idbCache';
+import { idbGet, idbSet } from '../utils/idbCache';
 import { useCallback } from 'react';
 import { ArrowUpIcon, ArrowDownIcon, CheckIcon, InformationCircleIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 
 interface PortfolioStatusCardProps {
   portfolioName: string;
+  onConfigureTargets?: (assetTypes: string[], riskOptions: string[]) => void;
 }
 
-const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName }) => {
+const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName, onConfigureTargets }) => {
   const [status, setStatus] = useState<PortfolioStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -116,16 +117,7 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
     }
   }, [meta, CACHE_META_KEY]);
 
-  const handleResetMeta = useCallback(async () => {
-    try {
-      await idbDel(CACHE_META_KEY);
-    } catch (e) {
-      // ignore
-    }
-    setMeta({});
-    originalMetaRef.current = {};
-    setDirty(false);
-  }, [CACHE_META_KEY]);
+  // handleResetMeta intentionally removed; Reset button is commented out
 
   useEffect(() => {
     // Always fetch live-computed status so the UI reflects current transactions.
@@ -341,6 +333,13 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            className="px-2 py-1 rounded-md text-xs bg-gray-700/80 hover:bg-gray-600 text-gray-100"
+            onClick={() => onConfigureTargets && onConfigureTargets(ASSET_TYPES, RISK_OPTIONS)}
+            title="Configure target allocations"
+          >
+            Configure Targets
+          </button>
           <button
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow ${dirty ? 'bg-indigo-600/90 hover:bg-indigo-500 text-white ring-2 ring-indigo-400/40' : 'bg-gray-700/80 hover:bg-gray-600 text-gray-100'}`}
             disabled={!dirty}

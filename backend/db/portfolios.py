@@ -385,6 +385,22 @@ def save_holdings_metadata(portfolio: str, metadata_map: Dict[str, Dict[str, Any
         pass
 
 
+def save_portfolio_targets(portfolio: str, mode: str, targets: Dict[str, float]) -> None:
+    """Persist user-defined target allocations under the portfolio status document.
+
+    mode: 'asset_type' or 'risk'
+    targets: map of key -> percent (numbers)
+    """
+    client = _ensure_client()
+    if LOG_FIRESTORE:
+        print(f"[firestore][write] save_portfolio_targets for {portfolio} mode={mode} entries={len(targets)}")
+    doc_ref = client.collection(COL_PORTFOLIO_STATUS).document(portfolio)
+    # write under 'targets' field: { asset_type: {...}, risk: {...} }
+    payload = { 'targets': { mode: targets }, 'updated_at': firestore.SERVER_TIMESTAMP }
+    # merge to preserve other fields
+    doc_ref.set(payload, merge=True)
+
+
 def migrate_from_sqlite(sqlite_path: str = "ticker_data.db") -> None:
     """Migrate legacy SQLite data (tickers and transactions) into Firestore.
 

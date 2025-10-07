@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import ReactDOM from 'react-dom';
+import TargetAllocationPanel from '../components/TargetAllocationPanel';
 import { useAuth } from '../AuthContext';
 import { useParams } from 'react-router-dom';
 import { fetchPortfolioStatus, fetchPortfolioStatusLive, savePortfolioStatus } from '../services/portfolioService';
@@ -13,6 +15,9 @@ const PortfolioStatusPage: React.FC = () => {
   const [sortBy, setSortBy] = useState<string>('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [updating, setUpdating] = useState(false);
+  const [showTargetsModal, setShowTargetsModal] = useState(false);
+  const [passedAssetTypes, setPassedAssetTypes] = useState<string[] | null>(null);
+  const [passedRiskOptions, setPassedRiskOptions] = useState<string[] | null>(null);
 
   // Helper to load status: try saved, if not found, compute and save
   const loadStatus = async (forceUpdate = false) => {
@@ -118,6 +123,29 @@ const PortfolioStatusPage: React.FC = () => {
       >
         {updating ? 'Updating...' : 'Update Status'}
       </button>
+      <button
+        className="mb-4 ml-3 px-3 py-2 rounded bg-gray-700 text-white font-medium hover:bg-gray-600 disabled:opacity-50"
+        onClick={() => {
+          // derive asset types and risk options from status holdings
+          const types = new Set<string>();
+          if (status && Array.isArray(status.holdings)) {
+            status.holdings.forEach((h: any) => {
+              if (h.asset_type) types.add(h.asset_type);
+              if (h.category) types.add(h.category);
+            });
+          }
+          let assetTypes = Array.from(types).filter(Boolean);
+          if (assetTypes.length === 0 && status && Array.isArray(status.holdings)) {
+            assetTypes = status.holdings.map((h:any) => h.ticker).slice(0,20);
+          }
+          const riskOptions = ['Low', 'Medium', 'High'];
+          setPassedAssetTypes(assetTypes);
+          setPassedRiskOptions(riskOptions);
+          setShowTargetsModal(true);
+        }}
+      >
+        Configure Targets
+      </button>
       {/* No last_updated in PortfolioStatusResponse, so skip that */}
       <div className="mb-6 text-lg text-indigo-300 font-semibold">Total Value: {status.total_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} </div>
       <table className="min-w-full divide-y divide-gray-700 bg-gray-800 rounded-xl">
@@ -148,6 +176,23 @@ const PortfolioStatusPage: React.FC = () => {
           ))}
         </tbody>
       </table>
+      {showTargetsModal && ReactDOM.createPortal(
+        <TargetAllocationPanel
+          open={showTargetsModal}
+          onClose={() => { setShowTargetsModal(false); setPassedAssetTypes(null); setPassedRiskOptions(null); }}
+          portfolioName={portfolioName!}
+          idToken={idToken}
+          assetTypes={passedAssetTypes || undefined}
+          riskOptions={passedRiskOptions || undefined}
+          onSaved={async () => {
+            // refresh status after saving targets
+            setPassedAssetTypes(null);
+            setPassedRiskOptions(null);
+            await loadStatus(true);
+          }}
+        />,
+        document.getElementById('modal-root') as Element
+      )}
     </div>
   );
 };

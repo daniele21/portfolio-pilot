@@ -111,7 +111,9 @@ def parse_transactions(raw_text, portfolio_name=None):
     transactions = [tx for tx in transactions if tx['ticker'] and isinstance(tx['ticker'], str) and tx['ticker'].strip()]
     return transactions
 
-def generate_grounded_report_response(prompt: str, model_name: str = "gemini-2.5-flash"):
+def generate_grounded_report_response(prompt: str, 
+                                      model_name: str = "gemini-2.5-flash",
+                                      thinking=None):
     """
     Generate a Gemini report using grounding (Google Search) for more accurate, up-to-date information.
     Returns the model's answer and grounding metadata (search queries, citations), and logs the Gemini API cost.
@@ -123,13 +125,22 @@ def generate_grounded_report_response(prompt: str, model_name: str = "gemini-2.5
     grounding_tool = types.Tool(
         google_search=types.GoogleSearch()
     )
-    # 2) Include it in your config
+    # 2) Include it in your config. If a `thinking` budget is provided, set it
+    # as the thinking_config; otherwise leave it None.
+    thinking_config = None
+    if thinking is not None:
+        try:
+            # Accept either an integer budget or a value coercible to int
+            thinking_budget = int(thinking)
+            thinking_config = types.ThinkingConfig(thinking_budget=thinking_budget)
+        except Exception:
+            # If building ThinkingConfig fails, fall back to None (no thinking config)
+            thinking_config = None
+
     config = types.GenerateContentConfig(
         temperature=0.0,
         tools=[grounding_tool],
-        # thinking_config=types.ThinkingConfig(
-        #     thinking_budget=2048,
-        # ),
+        thinking_config=thinking_config,
     )
     # 3) Make a grounded call
     response = client.models.generate_content(

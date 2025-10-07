@@ -46,6 +46,82 @@ def get_all_portfolios():
         return jsonify({'error': str(e)}), 500
 
 
+# @bp.route('/api/tickers/search', methods=['GET', 'OPTIONS'])
+# def ticker_search():
+    """Typeahead style instrument search via Yahoo Finance.
+
+    Query params:
+      q: search string (min length 2)
+      lang (optional)
+      region (optional)
+
+    Does NOT require auth because results are public metadata, but you can
+    easily add @require_google_token() if you want to restrict usage.
+    """
+    if request.method == 'OPTIONS':  # CORS preflight
+        return ('', 200)
+    q = (request.args.get('q') or '').strip()
+    provider = (request.args.get('provider') or 'gemini').lower()
+    if len(q) < 2:
+        return jsonify({'error': 'Query too short (min 2 chars)'}), 400
+    try:
+        if provider == 'yahoo':
+            from services.yahoo_search import search_instruments
+            lang = request.args.get('lang', 'en-US')
+            region = request.args.get('region', 'US')
+            data = search_instruments(q, lang=lang, region=region)
+            data['provider'] = 'yahoo'
+            return jsonify(data), 200
+        # default: gemini
+        from services.gemini_ticker_search import gemini_ticker_search
+        # Optional parameters
+        model_name = request.args.get('model')
+        try:
+            temperature = float(request.args.get('temperature') or 0.0)
+        except Exception:
+            temperature = 0.0
+        try:
+            max_output_tokens = int(request.args.get('max_output_tokens') or 256)
+        except Exception:
+            max_output_tokens = 256
+        grounding = (request.args.get('grounding') or 'false').lower() in ('1', 'true', 'yes')
+        data = gemini_ticker_search(q, model_name=model_name, temperature=temperature, max_output_tokens=max_output_tokens, grounding=grounding)
+        return jsonify(data), 200
+    except Exception as e:  # pragma: no cover
+        current_app.logger.exception('ticker_search failed')
+        return jsonify({'error': f'Search failed: {e}', 'provider': provider, 'query': q, 'results': []}), 500
+
+
+@bp.route('/api/tickers/search', methods=['GET', 'OPTIONS'])
+def gemini_search_route():
+    """Direct Gemini ticker discovery endpoint.
+
+    Query params: q (required), model (optional), temperature (optional), max_output_tokens (optional), grounding (optional true/false)
+    """
+    if request.method == 'OPTIONS':
+        return ('', 200)
+    q = (request.args.get('q') or '').strip()
+    if len(q) < 2:
+        return jsonify({'error': 'Query too short (min 2 chars)'}), 400
+    model_name = request.args.get('model')
+    try:
+        temperature = float(request.args.get('temperature') or 0.0)
+    except Exception:
+        temperature = 0.0
+    try:
+        max_output_tokens = int(request.args.get('max_output_tokens') or 256)
+    except Exception:
+        max_output_tokens = 256
+    grounding = (request.args.get('grounding') or 'true').lower() in ('1', 'true', 'yes')
+    try:
+        from services.gemini_ticker_search import gemini_ticker_search
+        data = gemini_ticker_search(q, model_name=model_name, temperature=temperature, max_output_tokens=max_output_tokens, grounding=grounding)
+        return jsonify(data), 200
+    except Exception as e:
+        current_app.logger.exception('gemini_search_route failed')
+        return jsonify({'error': str(e)}), 500
+
+
 @bp.route('/api/transactions/<string:portfolio_name>', methods=['POST'])
 def add_transactions(portfolio_name):
     try:
@@ -175,6 +251,62 @@ def get_portfolio_status_live_route(portfolio_name):
         return jsonify({'error': str(e)}), 500
 
 
+@bp.route('/api/portfolio/<string:portfolio_name>/risk', methods=['GET'])
+def portfolio_risk_route(portfolio_name):
+    """Return a daily Gemini-backed portfolio risk analysis.
+
+    If a risk analysis for the current day already exists in Firestore, return it.
+    Otherwise compute it (using portfolio status and cached returns), store it,
+    and return the newly generated analysis.
+    """
+    try:
+        from db.reports import get_portfolio_report, save_portfolio_report
+        from datetime import datetime
+
+        # Try to load existing report for today
+        existing = get_portfolio_report(portfolio_name)
+        if existing is not None:
+            ref_date = existing.get('reference_date')
+            if ref_date:
+                try:
+                    ref_dt = datetime.strptime(ref_date, '%Y-%m-%d %H:%M:%S').date()
+                except Exception:
+                    try:
+                        ref_dt = datetime.fromisoformat(ref_date).date()
+                    except Exception:
+                        ref_dt = None
+                if ref_dt == datetime.now().date():
+                    return jsonify({'report': existing.get('report'), 'cost': existing.get('cost'), 'reference_date': existing.get('reference_date')}), 200
+
+        # No fresh report found => compute
+        from core.portfolio import get_portfolio_status, get_cached_portfolio_performance
+        status = get_portfolio_status(portfolio_name)
+        returns = get_cached_portfolio_performance(portfolio_name)
+
+        from services.gemini_portfolio_risk import gemini_portfolio_risk_analysis
+        res = gemini_portfolio_risk_analysis(status, returns)
+        analysis = res.get('analysis')
+        cost = res.get('cost')
+        error = res.get('error')
+
+        reference_date = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        if analysis is None:
+            return jsonify({'error': error or 'No analysis returned'}), 500
+
+        report_to_save = analysis if isinstance(analysis, dict) else {'raw': analysis, 'parse_error': error}
+        save_portfolio_report(portfolio_name, report_to_save, reference_date=reference_date, cost=cost)
+        return jsonify({'report': report_to_save, 'cost': cost, 'reference_date': reference_date}), 200
+    except Exception as e:
+        current_app.logger.exception(f"Failed to compute or fetch portfolio risk for {portfolio_name}")
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/portfolio/<string:portfolio_name>/risk', methods=['OPTIONS'])
+def portfolio_risk_options(portfolio_name):
+    # CORS preflight handler for the risk endpoint
+    return ('', 200)
+
+
 @bp.route('/api/portfolio/<string:portfolio_name>/status/save', methods=['POST'])
 def save_portfolio_status_route(portfolio_name):
     try:
@@ -215,6 +347,83 @@ def save_portfolio_status_metadata_route(portfolio_name):
 
 @bp.route('/api/portfolio/<string:portfolio_name>/status/metadata', methods=['OPTIONS'])
 def save_portfolio_status_metadata_options(portfolio_name):
+    return ('', 200)
+
+
+@bp.route('/api/portfolio/<string:portfolio_name>/status/targets', methods=['POST'])
+@require_google_token()
+def save_portfolio_status_targets_route(portfolio_name):
+    """Save user-defined target allocations (by asset type or risk) under the portfolio status document.
+
+    Expected JSON body: { mode: 'asset_type'|'risk', targets: { key: percent, ... } }
+    This will write into the COL_PORTFOLIO_STATUS document for the portfolio a `targets` map containing the provided data.
+    """
+    try:
+        data = safe_get_json(request)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    mode = data.get('mode')
+    targets = data.get('targets')
+    if mode not in ('asset_type', 'risk'):
+        return jsonify({'error': 'Invalid mode, expected asset_type or risk'}), 400
+    if not isinstance(targets, dict):
+        return jsonify({'error': 'Invalid targets payload'}), 400
+    try:
+        from db.portfolios import save_portfolio_targets
+        save_portfolio_targets(portfolio_name, mode, targets)
+        return jsonify({'status': 'saved', 'portfolio': portfolio_name}), 200
+    except Exception as e:
+        current_app.logger.exception('Failed to save portfolio targets')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/portfolio/<string:portfolio_name>/status/targets', methods=['OPTIONS'])
+def save_portfolio_status_targets_options(portfolio_name):
+    return ('', 200)
+
+
+# Convenience endpoints for targets (shorter path)
+@bp.route('/api/portfolio/<string:portfolio_name>/targets', methods=['GET'])
+def get_portfolio_targets_route(portfolio_name):
+    try:
+        # Read the portfolio_status document directly so we don't lose any custom fields
+        from db.firestore_client import _ensure_client, COL_PORTFOLIO_STATUS
+        client = _ensure_client()
+        doc = client.collection(COL_PORTFOLIO_STATUS).document(portfolio_name).get()
+        if not doc.exists:
+            return jsonify({'targets': {}}), 200
+        data = doc.to_dict() or {}
+        targets = data.get('targets') or {}
+        return jsonify({'targets': targets}), 200
+    except Exception as e:
+        current_app.logger.exception(f'Failed to fetch targets for {portfolio_name}')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/portfolio/<string:portfolio_name>/targets', methods=['POST'])
+@require_google_token()
+def save_portfolio_targets_route(portfolio_name):
+    try:
+        data = safe_get_json(request)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    mode = data.get('mode')
+    targets = data.get('targets')
+    if mode not in ('asset_type', 'risk'):
+        return jsonify({'error': 'Invalid mode, expected asset_type or risk'}), 400
+    if not isinstance(targets, dict):
+        return jsonify({'error': 'Invalid targets payload'}), 400
+    try:
+        from db.portfolios import save_portfolio_targets
+        save_portfolio_targets(portfolio_name, mode, targets)
+        return jsonify({'status': 'saved', 'portfolio': portfolio_name}), 200
+    except Exception as e:
+        current_app.logger.exception('Failed to save portfolio targets')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/portfolio/<string:portfolio_name>/targets', methods=['OPTIONS'])
+def portfolio_targets_options(portfolio_name):
     return ('', 200)
 
 
@@ -361,9 +570,9 @@ def portfolio_kpis(portfolio_name):
             net_pl = None
             cost_basis = None
 
-        # Determine best/worst ticker by net performance (pct) using transactions cost-basis and current holding value
-        best_ticker = None
-        worst_ticker = None
+        # Determine tickers sorted by net performance (pct) and net value (absolute)
+        net_performance_tickers = []
+        net_value_tickers = []
         try:
             # Build cost basis per ticker
             from collections import defaultdict
@@ -387,18 +596,29 @@ def portfolio_kpis(portfolio_name):
                     continue
                 current_abs = float(h.get('value', 0) or 0)
                 cb = float(per_ticker_cost.get(tk, 0) or 0)
+                # Only compute net metrics when we have a non-zero cost basis
                 if cb and cb != 0:
                     pct = (current_abs - cb) / cb * 100.0
-                    perf_list.append({'ticker': tk, 'ticker_name': h.get('name'), 'abs_value': current_abs, 'pct': pct})
+                    net_value = current_abs - cb
+                    perf_list.append({
+                        'ticker': tk,
+                        'ticker_name': h.get('name'),
+                        'abs_value': current_abs,
+                        'cost_basis': cb,
+                        'net_value': net_value,
+                        'pct': pct
+                    })
+
             if perf_list:
-                # best by pct
-                best = max(perf_list, key=lambda x: x['pct'])
-                worst = min(perf_list, key=lambda x: x['pct'])
-                best_ticker = best
-                worst_ticker = worst
+                # Sort descending by pct for net_performance_tickers
+                perf_by_pct = sorted(perf_list, key=lambda x: x['pct'], reverse=True)
+                # Sort descending by net_value for net_value_tickers
+                perf_by_net_value = sorted(perf_list, key=lambda x: x['net_value'], reverse=True)
+                net_performance_tickers = perf_by_pct
+                net_value_tickers = perf_by_net_value
         except Exception:
-            best_ticker = None
-            worst_ticker = None
+            net_performance_tickers = []
+            net_value_tickers = []
 
         kpis = {
             'total_value': total_value,
@@ -407,8 +627,8 @@ def portfolio_kpis(portfolio_name):
             'cost_basis': cost_basis,
             'net_pl': net_pl,
             'net_performance': net_performance,
-            'best_ticker': best_ticker,
-            'worst_ticker': worst_ticker,
+            'net_performance_tickers': net_performance_tickers,
+            'net_value_tickers': net_value_tickers,
         }
         _set_intraday_cache(cache_key, kpis)
         return jsonify(kpis)
@@ -517,9 +737,7 @@ def portfolio_allocation(portfolio_name):
         if grouping == 'overall':
             from core.portfolio import get_overall_asset_allocation
             allocation_data = get_overall_asset_allocation(portfolio_name)
-        elif grouping == 'quoteType':
-            from core.portfolio import get_asset_allocation_by_quote_type
-            allocation_data = get_asset_allocation_by_quote_type(portfolio_name)
+        # quoteType grouping removed; use asset_type (assetType) endpoint instead
         elif grouping in ('category', 'risk', 'category_risk'):
             # Uses saved holdings metadata (portfolio_holdings) when available
             from core.portfolio import get_asset_allocation_by_category_and_risk
@@ -537,7 +755,7 @@ def portfolio_allocation(portfolio_name):
             full = get_asset_allocation_by_asset_type(portfolio_name)
             allocation_data = full.get('by_asset_type', {})
         else:
-            return jsonify({'error': 'Invalid grouping parameter. Use "overall", "quoteType", "category", "risk" or "category_risk"'}), 400
+            return jsonify({'error': 'Invalid grouping parameter. Use "overall", "category", "risk", "category_risk" or "asset_type"'}), 400
         
         cache_key = f"allocation::{portfolio_name}::grouping={grouping}"
         cached = _get_intraday_cached(cache_key)
@@ -560,6 +778,8 @@ def portfolio_volatility(portfolio_name):
     try:
         from core.portfolio import (
             compute_portfolio_volatility,
+            compute_portfolio_performance,
+            compute_portfolio_volatility_1d,
             DEFAULT_VOLATILITY_WINDOW,
             VALID_VOLATILITY_WINDOWS,
             DEFAULT_EWM_SPAN,
@@ -604,17 +824,67 @@ def portfolio_volatility(portfolio_name):
                 window_value = parsed
                 cache_window_key = str(parsed)
 
-        cache_key = f"volatility::{portfolio_name}::method={method}::window={cache_window_key}"
+        # If caller requests the rolling series, compute and return it
+        series_flag = (request.args.get('series') or '').lower() in ('1', 'true', 'yes')
+
+        # Include the series flag in the cache key so scalar and series
+        # payloads are cached separately and don't get mixed.
+        cache_key = f"volatility::{portfolio_name}::method={method}::window={cache_window_key}::series={'1' if series_flag else '0'}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
-
-        volatility = compute_portfolio_volatility(portfolio_name, window=window_value, method=method)
-        payload = {
-            'volatility': volatility if (volatility is not None and not math.isnan(volatility)) else None,
-            'window': None if window_value is None else window_value,
-            'method': method
-        }
+        if series_flag:
+            # compute time-series (pd.Series) and convert to list of {date, volatility}
+            try:
+                vol_series = compute_portfolio_volatility_1d(portfolio_name, window=window_value or DEFAULT_VOLATILITY_WINDOW, method=method)
+                # Convert to list of points; handle empty series
+                points = []
+                if vol_series is not None:
+                    # vol_series may be a pandas Series; iterate preserving order
+                    # If the series index is integer positions (common because perf DataFrame
+                    # has a RangeIndex), map integers back to the performance dates.
+                    import numbers
+                    perf_dates = None
+                    for idx, val in vol_series.items():
+                        # idx may be Timestamp, string, or integer position
+                        date_str = None
+                        try:
+                            if isinstance(idx, numbers.Integral):
+                                # Lazily compute performance dates mapping
+                                if perf_dates is None:
+                                    try:
+                                        perf = compute_portfolio_performance(portfolio_name)
+                                        perf_dates = [p.get('date') for p in perf]
+                                    except Exception:
+                                        perf_dates = None
+                                if perf_dates is not None and 0 <= int(idx) < len(perf_dates):
+                                    date_str = perf_dates[int(idx)]
+                                else:
+                                    date_str = str(idx)
+                            else:
+                                # Try Timestamp-like objects first
+                                try:
+                                    date_str = idx.strftime('%Y-%m-%d')
+                                except Exception:
+                                    date_str = str(idx)
+                        except Exception:
+                            date_str = str(idx)
+                        try:
+                            v = None if (val is None or math.isnan(val)) else float(val)
+                        except Exception:
+                            v = None
+                        points.append({'date': date_str, 'volatility': v})
+                payload = {'series': points, 'window': None if window_value is None else window_value, 'method': method}
+            except Exception as e:
+                current_app.logger.exception('Failed to compute volatility series')
+                return jsonify({'error': str(e)}), 500
+        else:
+            volatility = compute_portfolio_volatility(portfolio_name, window=window_value, method=method)
+            payload = {
+                'volatility': volatility if (volatility is not None and not math.isnan(volatility)) else None,
+                'window': None if window_value is None else window_value,
+                'method': method
+            }
         _set_intraday_cache(cache_key, payload)
         return jsonify(payload)
     except Exception as e:

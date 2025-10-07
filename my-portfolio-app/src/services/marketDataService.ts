@@ -102,6 +102,43 @@ export const fetchTickerDetails = async (symbol: string): Promise<BackendTickerR
   return response;
 };
 
+export interface TickerSearchResultItem {
+  symbol: string;
+  shortname?: string;
+  longname?: string;
+  exchDisp?: string;
+  quoteType?: string;
+  currency?: string;
+  score?: number;
+}
+
+export interface TickerSearchResponse {
+  query: string;
+  count: number;
+  results: TickerSearchResultItem[];
+  error?: string;
+}
+
+export const searchTickers = async (query: string, provider: 'gemini' | 'yahoo' = 'gemini'): Promise<TickerSearchResponse | null> => {
+  const q = query.trim();
+  if (q.length < 2) return { query: q, count: 0, results: [] };
+  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const apiUrl = `${cleanApiBaseUrl}/api/tickers/search?q=${encodeURIComponent(q)}&provider=${provider}`;
+  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  const idToken = getAuthIdToken();
+  if (idToken) headers['Authorization'] = `Bearer ${idToken}`; // optional (endpoint currently public)
+  try {
+    const response = await fetch(apiUrl, { headers });
+    if (!response.ok) {
+      return { query: q, count: 0, results: [], error: `HTTP ${response.status}` };
+    }
+    const json = await response.json();
+    return json as TickerSearchResponse;
+  } catch (e: any) {
+    return { query: q, count: 0, results: [], error: e?.message || 'network error' };
+  }
+};
+
 export const fetchBenchmarkPerformance = async (symbol: string): Promise<HistoricalDataPoint[] | null> => {
   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
   const apiUrl = `${cleanApiBaseUrl}/api/benchmark/${encodeURIComponent(symbol)}/performance`;
