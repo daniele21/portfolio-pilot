@@ -690,15 +690,19 @@ def compute_returns_since(portfolio_name, start_date):
         ticker_histories[ticker] = df_hist['close']
     if not ticker_histories:
         return {'portfolio': None, 'tickers': {}}
-    # Find all dates in the range
+    # Collect all available dates across tickers
     all_dates = set()
     for s in ticker_histories.values():
         all_dates.update(s.index)
-    all_dates = sorted([d for d in all_dates if d >= pd.to_datetime(start_date)])
     if not all_dates:
         return {'portfolio': None, 'tickers': {}}
-    start_dt = all_dates[0]
-    end_dt = all_dates[-1]
+    # Use the requested start_date (so we can ffill prices at-or-before it)
+    start_dt = pd.to_datetime(start_date)
+    # Use the latest available date across tickers as the end date
+    end_dt = max(all_dates)
+    # If there's no available data on or after the requested start_date, return empty
+    if end_dt < start_dt:
+        return {'portfolio': None, 'tickers': {}}
     # Portfolio values
     def get_portfolio_value(dt):
         total = 0.0
@@ -729,7 +733,23 @@ def compute_returns_since(portfolio_name, start_date):
             price_end = ticker_histories.get(ticker, pd.Series()).loc[:end_dt].ffill().iloc[-1] if not ticker_histories.get(ticker, pd.Series()).loc[:end_dt].empty else 0.0
         start_val = qty_start * (price_start if price_start is not None else 0.0)
         end_val = qty_end * (price_end if price_end is not None else 0.0)
-        ticker_return = ((end_val - start_val) / start_val * 100) if start_val else 0.0
+        # If there were holdings at the start, compute returns based on holding values
+        if start_val:
+            ticker_return = ((end_val - start_val) / start_val * 100)
+        else:
+            # Fallback: compute price-based percent change for the ticker
+            try:
+                ps = float(price_start) if price_start is not None else 0.0
+            except Exception:
+                ps = 0.0
+            try:
+                pe = float(price_end) if price_end is not None else 0.0
+            except Exception:
+                pe = 0.0
+            if ps:
+                ticker_return = ((pe - ps) / ps * 100)
+            else:
+                ticker_return = 0.0
         # Get ticker name from ticker_info (Firestore)
         try:
             data, _ = get_ticker_data(ticker)

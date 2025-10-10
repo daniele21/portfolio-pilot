@@ -30,8 +30,9 @@ COL_PORTFOLIOS = "portfolios"
 COL_TRANSACTIONS = "transactions"
 COL_PORTFOLIO_STATUS = "portfolio_status"
 COL_PORTFOLIO_HOLDINGS = "portfolio_holdings"
-COL_PORTFOLIO_REPORTS = "portfolio_reports"
+COL_PORTFOLIO_REPORTS = "portfolio_report"
 COL_TICKER_REPORTS = "ticker_reports"
+COL_PORTFOLIO_SUMUP = "portfolio_sumup"
 
 
 def _ensure_client():

@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 import json
 from .firestore_client import _ensure_client, COL_PORTFOLIOS, COL_TRANSACTIONS, COL_PORTFOLIO_STATUS, COL_PORTFOLIO_HOLDINGS, COL_TICKERS, firestore, LOG_FIRESTORE
+from google.cloud.firestore_v1 import FieldFilter
 
 
 def aggregate_positions(transactions: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -90,7 +91,7 @@ def get_transactions(portfolio: Optional[str] = None) -> List[Dict[str, Any]]:
     if portfolio:
         if LOG_FIRESTORE:
             print(f"[firestore][query] {COL_TRANSACTIONS} WHERE portfolio == {portfolio} ORDER BY date")
-        docs = col.where("portfolio", "==", portfolio).order_by("date").stream()
+        docs = col.where(filter=FieldFilter("portfolio", "==", portfolio)).order_by("date").stream()
     else:
         if LOG_FIRESTORE:
             print(f"[firestore][query] {COL_TRANSACTIONS} ORDER BY date (all portfolios)")
@@ -180,7 +181,7 @@ def get_all_portfolio_names() -> List[str]:
 def delete_portfolio(portfolio_name: str) -> None:
     client = _ensure_client()
     # Stream all transaction documents for the portfolio and delete in batches
-    trans_iter = client.collection(COL_TRANSACTIONS).where("portfolio", "==", portfolio_name).stream()
+    trans_iter = client.collection(COL_TRANSACTIONS).where(filter=FieldFilter("portfolio", "==", portfolio_name)).stream()
     refs = [d.reference for d in trans_iter]
     try:
         # Firestore batch commit supports up to 500 operations; use a safe margin

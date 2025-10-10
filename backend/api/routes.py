@@ -307,6 +307,146 @@ def portfolio_risk_options(portfolio_name):
     return ('', 200)
 
 
+@bp.route('/api/portfolio/<string:portfolio_name>/summary', methods=['GET'])
+def portfolio_sumup_route(portfolio_name):
+    """Return a daily Gemini-backed portfolio structured summary ("sumup").
+
+    Persistence pattern:
+      Firestore collection: portfolio_sumup
+      Document id: {portfolio}_YYYY_MM_DD (UTC date)
+
+    Logic:
+      1. If today's doc exists -> return it (no recompute).
+      2. Else gather needed data (performance, returns, risk report, allocation, volatility) and call Gemini.
+      3. Save and return the generated summary (or raw text + error if JSON parse failed).
+    """
+    try:
+        from db.reports import get_portfolio_sumup, save_portfolio_sumup, get_portfolio_report
+        from core.portfolio import (
+            get_cached_portfolio_performance,
+            get_portfolio_status,
+            get_cached_portfolio_performance as get_returns_series,
+            get_overall_asset_allocation,
+            compute_portfolio_volatility,
+        )
+        from services.gemini_portfolio_sumup import gemini_portfolio_sumup
+
+        # 1. Try Firestore daily doc first
+        today_date = datetime.utcnow().strftime('%Y-%m-%d')
+        existing = get_portfolio_sumup(portfolio_name, today_date)
+        if existing is not None:
+            return jsonify({'sumup': existing.get('sumup'), 'cost': existing.get('cost'), 'reference_date': existing.get('reference_date'), 'cached': True}), 200
+
+        # 2. Gather context
+        performance = get_cached_portfolio_performance(portfolio_name) or []
+
+        # Full RETURNS KPIs (reuse same underlying core functions as /kpis/returns endpoint) - simplified aggregation
+        returns_kpis = {}
+        try:
+            from core.portfolio import (
+                get_last_day_possible_returns,
+                get_last_three_days_returns,
+                get_weekly_returns,
+                get_monthly_returns,
+                get_three_month_returns,
+                get_ytd_returns,
+                get_one_year_return,
+            )
+            raw = {
+                'daily': get_last_day_possible_returns(portfolio_name),
+                'three_days': get_last_three_days_returns(portfolio_name),
+                'weekly': get_weekly_returns(portfolio_name),
+                'monthly': get_monthly_returns(portfolio_name),
+                'three_month': get_three_month_returns(portfolio_name),
+                'ytd': get_ytd_returns(portfolio_name),
+                'one_year': get_one_year_return(portfolio_name),
+            }
+            for key, period_obj in raw.items():
+                if not isinstance(period_obj, dict):
+                    continue
+                tickers_obj = period_obj.get('tickers') if isinstance(period_obj.get('tickers'), dict) else {}
+                sum_end = 0.0
+                found_any = False
+                for tk, tkobj in tickers_obj.items():
+                    try:
+                        ev = tkobj.get('end_value')
+                        if isinstance(ev, (int, float)) and not math.isnan(ev) and not math.isinf(ev):
+                            sum_end += float(ev)
+                            found_any = True
+                    except Exception:
+                        continue
+                if found_any:
+                    portfolio_obj = period_obj.get('portfolio') if isinstance(period_obj.get('portfolio'), dict) else {}
+                    period_obj['portfolio'] = portfolio_obj
+                    start_value = portfolio_obj.get('start_value') if isinstance(portfolio_obj.get('start_value'), (int, float)) else None
+                    portfolio_obj['end_value'] = sum_end
+                    if isinstance(start_value, (int, float)) and start_value != 0 and not math.isnan(start_value):
+                        portfolio_obj['return_pct'] = (sum_end - float(start_value)) / float(start_value) * 100.0
+                raw[key] = period_obj
+            returns_kpis = raw
+        except Exception:
+            current_app.logger.exception("Failed computing full returns KPIs for summary")
+            returns_kpis = {}
+
+        # risk report (already daily cached in its own doc)
+        risk_existing = get_portfolio_report(portfolio_name)
+        risk_report = (risk_existing or {}).get('report') if risk_existing else None
+
+        # allocation (overall, by category, by risk, combined category_risk, and by asset_type)
+        allocation_combined = {}
+        try:
+            from core.portfolio import get_overall_asset_allocation, get_asset_allocation_by_category_and_risk, get_asset_allocation_by_asset_type
+            overall_alloc = get_overall_asset_allocation(portfolio_name)
+            cat_risk_full = get_asset_allocation_by_category_and_risk(portfolio_name)
+            asset_type_full = get_asset_allocation_by_asset_type(portfolio_name)
+            allocation_combined = {
+                'overall': overall_alloc,
+                'by_category': cat_risk_full.get('by_category') if isinstance(cat_risk_full, dict) else {},
+                'by_risk': cat_risk_full.get('by_risk') if isinstance(cat_risk_full, dict) else {},
+                'category_risk': cat_risk_full,
+                'by_asset_type': asset_type_full.get('by_asset_type') if isinstance(asset_type_full, dict) else {},
+            }
+        except Exception:
+            current_app.logger.exception("Failed computing allocation breakdowns for summary")
+            allocation_combined = {}
+
+        # volatility (compute key scalar metrics)
+        try:
+            vol = compute_portfolio_volatility(portfolio_name)
+            # Expect vol to maybe be dict; ensure we pass through
+            volatility = vol if isinstance(vol, dict) else {'volatility': vol}
+        except Exception:
+            volatility = {}
+
+        # 3. Call Gemini summary function
+        res = gemini_portfolio_sumup(
+            portfolio_name,
+            performance=performance,
+            returns_kpis=returns_kpis,
+            risk_report=risk_report,
+            allocation=allocation_combined,
+            volatility=volatility,
+        )
+        summary = res.get('summary')
+        cost = res.get('cost')
+        error = res.get('error')
+        reference_date = res.get('reference_date')
+        if summary is None:
+            return jsonify({'error': error or 'Failed to generate summary'}), 500
+
+        # 4. Persist (only if parsed JSON or string summary exists)
+        save_portfolio_sumup(portfolio_name, summary, reference_date=reference_date, cost=cost)
+        return jsonify({'sumup': summary, 'cost': cost, 'reference_date': reference_date, 'cached': False, 'error': error}), 200
+    except Exception as e:
+        current_app.logger.exception(f"Failed to compute or fetch portfolio sumup for {portfolio_name}")
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/portfolio/<string:portfolio_name>/summary', methods=['OPTIONS'])
+def portfolio_sumup_options(portfolio_name):
+    return ('', 200)
+
+
 @bp.route('/api/portfolio/<string:portfolio_name>/status/save', methods=['POST'])
 def save_portfolio_status_route(portfolio_name):
     try:
@@ -379,6 +519,216 @@ def save_portfolio_status_targets_route(portfolio_name):
 
 @bp.route('/api/portfolio/<string:portfolio_name>/status/targets', methods=['OPTIONS'])
 def save_portfolio_status_targets_options(portfolio_name):
+    return ('', 200)
+
+
+# Alerts endpoints: per-portfolio alert settings stored in Firestore collection 'alerts'
+@bp.route('/api/alerts/<string:portfolio_name>', methods=['GET'])
+def get_portfolio_alerts(portfolio_name):
+    try:
+        current_app.logger.info(f"GET /api/alerts requested for portfolio: {portfolio_name}")
+        from db.firestore_client import _ensure_client
+        client = _ensure_client()
+        doc = client.collection('alerts').document(portfolio_name).get()
+        if not doc.exists:
+            return jsonify({'alerts': None}), 200
+        data = doc.to_dict() or {}
+        return jsonify({'alerts': data}), 200
+    except Exception as e:
+        current_app.logger.exception(f'Failed to fetch alerts for {portfolio_name}')
+        return jsonify({'error': str(e)}), 500
+
+
+# Fallback route: use <path:...> to accept portfolio names that may contain slashes or
+# unusual characters that otherwise could result in a 404 from the stricter <string:...> rule.
+@bp.route('/api/alerts/<path:portfolio_name>', methods=['GET'])
+def get_portfolio_alerts_path(portfolio_name):
+    # Delegate to the main handler (keeps behavior identical)
+    return get_portfolio_alerts(portfolio_name)
+
+
+@bp.route('/api/alerts/<string:portfolio_name>', methods=['POST'])
+@require_google_token()
+def save_portfolio_alerts(portfolio_name):
+    try:
+        data = safe_get_json(request)
+    except ValueError:
+        return jsonify({'error': 'Invalid JSON body'}), 400
+    alerts = data.get('alerts')
+    if alerts is None or not isinstance(alerts, dict):
+        return jsonify({'error': 'Missing or invalid alerts payload'}), 400
+    try:
+        from db.firestore_client import _ensure_client
+        client = _ensure_client()
+        client.collection('alerts').document(portfolio_name).set(alerts)
+        return jsonify({'status': 'saved'}), 200
+    except Exception as e:
+        current_app.logger.exception(f'Failed to save alerts for {portfolio_name}')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/alerts/<string:portfolio_name>', methods=['OPTIONS'])
+def alerts_options(portfolio_name):
+    return ('', 200)
+
+
+@bp.route('/api/alerts/<string:portfolio_name>', methods=['DELETE'])
+@require_google_token()
+def delete_portfolio_alerts(portfolio_name):
+    try:
+        from db.firestore_client import _ensure_client
+        client = _ensure_client()
+        doc_ref = client.collection('alerts').document(portfolio_name)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return jsonify({'status': 'not_found'}), 404
+        doc_ref.delete()
+        return jsonify({'status': 'deleted'}), 200
+    except Exception as e:
+        current_app.logger.exception(f'Failed to delete alerts for {portfolio_name}')
+        return jsonify({'error': str(e)}), 500
+
+
+# Evaluate alerts for a portfolio and return triggered conditions.
+@bp.route('/api/alerts/<string:portfolio_name>/check', methods=['GET'])
+@require_google_token()
+def check_portfolio_alerts(portfolio_name):
+    """Evaluate saved alert conditions against current portfolio data.
+
+    Response:
+      {
+        "triggered": [ { condition fields..., "measured_value": <number|null> } ],
+        "evaluated_count": n,
+        "timestamp": iso8601
+      }
+    """
+    try:
+        from db.firestore_client import _ensure_client
+        client = _ensure_client()
+        doc = client.collection('alerts').document(portfolio_name).get()
+        if not doc.exists:
+            return jsonify({'triggered': [], 'evaluated_count': 0, 'timestamp': datetime.utcnow().isoformat() + 'Z'}), 200
+        settings = doc.to_dict() or {}
+        conditions = settings.get('conditions') or []
+        if not isinstance(conditions, list):
+            return jsonify({'error': 'Invalid alerts document (conditions not list)'}), 500
+
+        # Pre-compute data needed for evaluation
+        from core.portfolio import (
+            compute_portfolio_volatility,
+            get_last_day_possible_returns,
+            get_last_three_days_returns,
+            get_weekly_returns,
+            get_monthly_returns,
+            get_three_month_returns,
+            get_ytd_returns,
+            get_one_year_return,
+        )
+
+        # Map timeframe tokens to the appropriate function + key used in returns objects
+        timeframe_funcs = {
+            '1d': get_last_day_possible_returns,
+            '3d': get_last_three_days_returns,
+            '1w': get_weekly_returns,
+            '1m': get_monthly_returns,
+            '3m': get_three_month_returns,
+            'ytd': get_ytd_returns,
+            '1y': get_one_year_return,
+        }
+
+        # Gather all returns objects once (avoid calling same function multiple times)
+        returns_cache = {}
+        for tf_key, fn in timeframe_funcs.items():
+            try:
+                returns_cache[tf_key] = fn(portfolio_name)
+            except Exception:
+                current_app.logger.exception(f"Failed computing returns for timeframe {tf_key} (portfolio {portfolio_name})")
+                returns_cache[tf_key] = None
+
+        # Volatility windows mapping from period token to window length
+        vol_window_map = {
+            '30d': 30,
+            '90d': 90,
+            '1y': 252,
+        }
+
+        triggered = []
+        evaluated = 0
+        now_iso = datetime.utcnow().isoformat() + 'Z'
+        for c in conditions:
+            try:
+                if not isinstance(c, dict):
+                    continue
+                if not c.get('enabled', True):
+                    continue
+                cond_type = c.get('type')
+                threshold = c.get('threshold')
+                comparison = c.get('comparison', 'above')
+                if not isinstance(threshold, (int, float)):
+                    continue
+                measured_value = None
+                matched = False
+                evaluated += 1
+
+                if cond_type == 'volatility':
+                    period = c.get('period')
+                    win = vol_window_map.get(period, 30)
+                    try:
+                        vol_val = compute_portfolio_volatility(portfolio_name, window=win)
+                        if isinstance(vol_val, (int, float)) and not math.isnan(vol_val):
+                            measured_value = float(vol_val) * 100.0  # assume underlying returns fraction -> convert to pct if needed
+                        else:
+                            measured_value = None
+                    except Exception:
+                        measured_value = None
+                elif cond_type == 'portfolio_return':
+                    timeframe = c.get('timeframe')
+                    returns_obj = returns_cache.get(timeframe)
+                    try:
+                        portfolio_obj = returns_obj.get('portfolio') if isinstance(returns_obj, dict) else None
+                        rv = portfolio_obj.get('return_pct') if isinstance(portfolio_obj, dict) else None
+                        if isinstance(rv, (int, float)) and not math.isnan(rv):
+                            measured_value = float(rv)
+                    except Exception:
+                        measured_value = None
+                elif cond_type == 'ticker_return':
+                    timeframe = c.get('timeframe')
+                    ticker = (c.get('ticker') or '').upper()
+                    returns_obj = returns_cache.get(timeframe)
+                    try:
+                        tickers_map = returns_obj.get('tickers') if isinstance(returns_obj, dict) else None
+                        tk_obj = tickers_map.get(ticker) if isinstance(tickers_map, dict) else None
+                        rv = tk_obj.get('return_pct') if isinstance(tk_obj, dict) else None
+                        if isinstance(rv, (int, float)) and not math.isnan(rv):
+                            measured_value = float(rv)
+                    except Exception:
+                        measured_value = None
+                else:
+                    # Unknown condition type, skip
+                    continue
+
+                if measured_value is not None:
+                    if comparison == 'above':
+                        matched = measured_value > threshold
+                    else:
+                        matched = measured_value < threshold
+
+                if matched:
+                    out_cond = dict(c)
+                    out_cond['measured_value'] = measured_value
+                    triggered.append(out_cond)
+            except Exception:  # pragma: no cover (robustness)
+                current_app.logger.exception('Error evaluating alert condition')
+                continue
+
+        return jsonify({'triggered': triggered, 'evaluated_count': evaluated, 'timestamp': now_iso}), 200
+    except Exception as e:
+        current_app.logger.exception(f'Failed to evaluate alerts for {portfolio_name}')
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/alerts/<string:portfolio_name>/check', methods=['OPTIONS'])
+def check_portfolio_alerts_options(portfolio_name):
     return ('', 200)
 
 
@@ -642,6 +992,7 @@ def portfolio_returns_kpis(portfolio_name):
     try:
         from core.portfolio import (
             get_last_day_possible_returns, 
+            get_last_three_days_returns,
             get_weekly_returns, 
             get_monthly_returns,
             get_three_month_returns,
@@ -655,6 +1006,7 @@ def portfolio_returns_kpis(portfolio_name):
 
         returns_kpis = {
             'daily': get_last_day_possible_returns(portfolio_name),
+            'three_days': get_last_three_days_returns(portfolio_name),
             'weekly': get_weekly_returns(portfolio_name),
             'monthly': get_monthly_returns(portfolio_name),
             'three_month': get_three_month_returns(portfolio_name),
@@ -667,8 +1019,19 @@ def portfolio_returns_kpis(portfolio_name):
         # entries may have NaN end_value; ignore those when summing.
         for period_key, period_obj in returns_kpis.items():
             try:
-                portfolio_obj = period_obj.get('portfolio', {}) if isinstance(period_obj, dict) else {}
-                tickers_obj = period_obj.get('tickers', {}) if isinstance(period_obj, dict) else {}
+                # Normalize portfolio and tickers to dicts even if they exist but are None
+                portfolio_obj = period_obj.get('portfolio') if isinstance(period_obj, dict) else None
+                if not isinstance(portfolio_obj, dict):
+                    portfolio_obj = {}
+                    # ensure the period_obj has a dict for portfolio so later writes succeed
+                    if isinstance(period_obj, dict):
+                        period_obj['portfolio'] = portfolio_obj
+
+                tickers_obj = period_obj.get('tickers') if isinstance(period_obj, dict) else None
+                if not isinstance(tickers_obj, dict):
+                    tickers_obj = {}
+                    if isinstance(period_obj, dict):
+                        period_obj['tickers'] = tickers_obj
 
                 # First, clean up NaN values in ticker data
                 for tk, tkobj in (tickers_obj.items() if isinstance(tickers_obj, dict) else []):

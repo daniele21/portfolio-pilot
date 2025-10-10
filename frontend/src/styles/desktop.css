@@ -1,0 +1,236 @@
+/* Desktop-only stylesheet for PortfolioPilot (900px and above)
+   This file is intentionally separate from mobile.css to keep mobile-first styles
+   isolated and make desktop overrides clearer. */
+
+@media (min-width: 900px) {
+  /* App Layout - Desktop */
+  .mp-app{
+    display:flex;
+    flex-direction:column;
+    height:100vh;
+  }
+
+  /* Header - Desktop */
+  .mp-header{
+    position:sticky;
+    top:0;
+    height:64px;
+    padding:12px 24px;
+    z-index:100;
+  }
+
+  .mp-title{
+    font-size:18px;
+  }
+
+  /* Show hamburger on desktop so users can toggle sidebar */
+  .mp-hamburger{
+    display:inline-flex !important;
+  }
+
+  .mp-search{
+    width:300px;
+    max-width:none;
+  }
+
+  /* Content Layout - Desktop */
+  .mp-content{
+    display:flex;
+    flex:1;
+    min-height:0;
+    margin-top:0;
+    margin-bottom:0;
+  }
+
+  /* Drawer - Desktop (permanent sidebar, but collapsible) */
+  .mp-drawer{
+    display:block !important; /* Ensure drawer is visible on desktop */
+    position:relative;
+    transform:none !important;
+    width:280px;
+    height:auto;
+    flex-shrink:0;
+    border-right:1px solid rgba(255,255,255,0.08);
+    box-shadow:none;
+    padding:24px 16px;
+    background:rgba(15,23,36,0.8);
+    backdrop-filter:blur(12px);
+  }
+
+  /* Animate width for smooth collapse/expand */
+  .mp-drawer{
+    transition:width 220ms cubic-bezier(.2,.9,.3,1), padding 180ms ease;
+  }
+
+  .mp-drawer ul{list-style:none;padding:0;margin:0}
+  .mp-drawer-item{margin-bottom:6px}
+  .mp-drawer-link{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    color:var(--text);
+    text-decoration:none;
+    padding:12px 16px;
+    border-radius:12px;
+    transition:all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    position:relative;
+    overflow:hidden;
+  }
+  .mp-drawer-link:hover{
+    background:rgba(255,255,255,0.08);
+    transform:translateX(4px);
+    box-shadow:0 4px 20px rgba(0,0,0,0.1);
+  }
+  .mp-drawer-link.active{
+    background:linear-gradient(135deg, rgba(109,40,217,0.15), rgba(59,130,246,0.08));
+    color:var(--text);
+    box-shadow:0 4px 20px rgba(109,40,217,0.2);
+  }
+  .mp-drawer-link.active::before{
+    content:'';
+    position:absolute;
+    left:0;
+    top:0;
+    bottom:0;
+    width:4px;
+    background:linear-gradient(180deg, #6d28d9, #3b82f6);
+    border-radius:0 2px 2px 0;
+  }
+  .mp-drawer-icon{width:22px;height:22px;flex:0 0 22px;color:var(--muted);transition:color 0.2s ease}
+  .mp-drawer-link:hover .mp-drawer-icon{color:var(--text)}
+  .mp-drawer-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+
+  .mp-drawer.open{
+    transform:none;
+  }
+
+  .mp-drawer ul{
+    margin-top:16px;
+  }
+
+  .mp-drawer li{
+    padding:14px 12px;
+    margin-bottom:4px;
+  }
+
+  .mp-drawer a{
+    font-size:15px;
+  }
+
+  /* When the drawer is closed on desktop we shrink it and hide its content */
+  .mp-drawer:not(.open){
+    width:88px; /* compact width */
+    padding:8px 2px; /* reduce padding so icons have more room */
+    /* allow icons to be fully visible instead of clipped while still
+       visually hiding labels via .mp-drawer-label rules */
+    overflow:visible;
+  }
+
+  /* Icons-only when collapsed: hide labels visually but keep accessible text */
+  .mp-drawer:not(.open) .mp-drawer-label{
+    position:relative; /* keep in flow for focus */
+    width:0;
+    height:0;
+    overflow:hidden;
+    opacity:0;
+    transform:translateX(-6px);
+    transition:opacity 180ms ease, transform 180ms ease, width 160ms ease;
+  }
+
+  .mp-drawer:not(.open) .mp-drawer-icon{color:var(--text)}
+
+  /* Tweak icon sizing/alignment in collapsed state so they are not cut off */
+  .mp-drawer:not(.open) .mp-drawer-link{
+    padding:8px 6px; /* smaller touch area fits the compact drawer */
+    justify-content:center; /* center the icon when labels are hidden */
+  }
+
+  .mp-drawer:not(.open) .mp-drawer-icon{
+    width:28px;
+    height:28px;
+    flex:0 0 28px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+  }
+
+  /* When hovering the collapsed drawer, show a floating tooltip-like label */
+  .mp-drawer:not(.open) .mp-drawer-link:hover::after{
+    content: attr(data-label);
+    position:fixed;
+    left:86px;
+    top: calc(var(--hover-top, 50%));
+    transform: translateY(-50%);
+    background:linear-gradient(135deg, rgba(0,0,0,0.95), rgba(20,20,30,0.95));
+    color:var(--text);
+    padding:10px 14px;
+    border-radius:10px;
+    font-size:13px;
+    font-weight:500;
+    box-shadow:0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.1);
+    z-index:60;
+    white-space:nowrap;
+    backdrop-filter:blur(8px);
+    animation:tooltipSlideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  @keyframes tooltipSlideIn {
+    from {
+      opacity:0;
+      transform:translateY(-50%) translateX(-4px);
+    }
+    to {
+      opacity:1;
+      transform:translateY(-50%) translateX(0);
+    }
+  }
+
+  /* Use transform on main content to produce GPU-accelerated smooth motion */
+  .mp-content{position:relative;overflow:hidden}
+  .mp-main{transition:transform 220ms cubic-bezier(.2,.9,.3,1);}
+  .mp-content.mp-collapsed .mp-main{transform:translateX(-16px);} 
+
+  /* Slightly stronger icon contrast on desktop */
+  .mp-drawer-icon{color:var(--muted);opacity:0.95}
+
+  /* Main Content - Desktop */
+  .mp-main{
+    flex:1;
+    min-width:0;
+    padding:0px;
+    overflow-y:auto;
+    margin-top:0;
+    margin-bottom:0;
+  }
+
+  /* Hide Bottom Navigation - Desktop */
+  .mp-bottomnav{
+    display:none;
+  }
+
+  /* Grid Layout - Desktop */
+  .mp-grid{
+    grid-template-columns:repeat(3,1fr);
+  }
+
+  /* Desktop drawer overlay - show when drawer is open */
+  .mp-drawer-overlay{
+    position:fixed;
+    top:0;
+    left:0;
+    right:0;
+    bottom:0;
+    background:linear-gradient(45deg, rgba(0,0,0,0.6), rgba(20,20,40,0.4));
+    backdrop-filter:blur(8px);
+    z-index:30;
+    opacity:0;
+    visibility:hidden;
+    transition:all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    display:block;
+  }
+  
+  .mp-drawer-overlay.open{
+    opacity:1;
+    visibility:visible;
+  }
+}
