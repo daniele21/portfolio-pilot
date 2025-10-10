@@ -1,6 +1,5 @@
 import { HistoricalDataPoint, BackendTickerResponse, BackendTickerHistoryItem } from '../types';
-
-const API_BASE_URL = 'http://127.0.0.1:5000';
+import { API_BASE_URL, cleanApiBaseUrl as _cleanApiBaseUrl } from '../apiBase';
 
 export const getAuthIdToken = (): string | null => {
   return localStorage.getItem('idToken');
@@ -67,9 +66,9 @@ export const fetchHistoricalMarketPrices = async (
   startDate: string, // YYYY-MM-DD
   endDate: string    // YYYY-MM-DD
 ): Promise<HistoricalDataPoint[] | null> => {
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const base = _cleanApiBaseUrl(API_BASE_URL);
   // The backend /api/ticker/<symbol> returns all available history. Filtering by date is done client-side.
-  const apiUrl = `${cleanApiBaseUrl}/api/ticker/${symbol.toUpperCase()}`;
+  const apiUrl = `${base}/api/ticker/${symbol.toUpperCase()}`;
 
   const backendResponse = await commonFetch(apiUrl, symbol);
 
@@ -94,8 +93,8 @@ export const fetchHistoricalMarketPrices = async (
 };
 
 export const fetchTickerDetails = async (symbol: string): Promise<BackendTickerResponse | null> => {
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/ticker/${symbol.toUpperCase()}`;
+  const base = _cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/ticker/${symbol.toUpperCase()}`;
   
   const response = await commonFetch(apiUrl, symbol);
   // console.log(`MarketDataService: fetchTickerDetails response for ${symbol}`, response);
@@ -122,8 +121,8 @@ export interface TickerSearchResponse {
 export const searchTickers = async (query: string, provider: 'gemini' | 'yahoo' = 'gemini'): Promise<TickerSearchResponse | null> => {
   const q = query.trim();
   if (q.length < 2) return { query: q, count: 0, results: [] };
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/tickers/search?q=${encodeURIComponent(q)}&provider=${provider}`;
+  const base = _cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/tickers/search?q=${encodeURIComponent(q)}&provider=${provider}`;
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`; // optional (endpoint currently public)
@@ -140,8 +139,8 @@ export const searchTickers = async (query: string, provider: 'gemini' | 'yahoo' 
 };
 
 export const fetchBenchmarkPerformance = async (symbol: string): Promise<HistoricalDataPoint[] | null> => {
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/benchmark/${encodeURIComponent(symbol)}/performance`;
+  const base = _cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/benchmark/${encodeURIComponent(symbol)}/performance`;
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken ? getAuthIdToken() : null;
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;

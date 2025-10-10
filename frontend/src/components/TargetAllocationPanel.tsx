@@ -152,14 +152,14 @@ export default function TargetAllocationPanel({ open, onClose, portfolioName, id
           <div className="mb-1 text-xs text-gray-400">Note: asset-type and risk targets are independent — you can save both. Each set should sum to 100% individually.</div>
           <div className="flex gap-3 text-xs">
             <div className="inline-flex items-center gap-2">
-              <span className={`px-2 py-0.5 rounded-full text-[11px] ${Math.abs(savedTotals.asset_type - 100) < 0.5 ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-200'}`} title="Saved totals for Asset Type targets">
+              {/* <span className={`px-2 py-0.5 rounded-full text-[11px] ${Math.abs(savedTotals.asset_type - 100) < 0.5 ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-200'}`} title="Saved totals for Asset Type targets">
                 Saved (Asset Type): {savedTotals.asset_type.toFixed(0)}%
-              </span>
+              </span> */}
             </div>
             <div className="inline-flex items-center gap-2">
-              <span className={`px-2 py-0.5 rounded-full text-[11px] ${Math.abs(savedTotals.risk - 100) < 0.5 ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-200'}`} title="Saved totals for Risk targets">
+              {/* <span className={`px-2 py-0.5 rounded-full text-[11px] ${Math.abs(savedTotals.risk - 100) < 0.5 ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-200'}`} title="Saved totals for Risk targets">
                 Saved (Risk): {savedTotals.risk.toFixed(0)}%
-              </span>
+              </span> */}
             </div>
           </div>
         </div>
@@ -167,13 +167,14 @@ export default function TargetAllocationPanel({ open, onClose, portfolioName, id
         <div className="space-y-2">
           {availableKeys.length === 0 && <div className="text-xs text-gray-400">No asset types detected — you can enter custom keys below.</div>}
           {(availableKeys.length > 0 ? availableKeys : Object.keys(targets).slice(0,10)).map(k => (
-            <div key={k} className="flex flex-col sm:flex-row sm:items-center gap-2">
-              <div className="flex-1 text-sm text-gray-200 min-w-0">{k}</div>
-              <input 
-                type="number" 
-                className="w-full sm:w-28 p-2 rounded bg-gray-800 text-gray-100 border border-gray-700 text-right text-sm" 
-                value={targets[k] ?? 0} 
-                onChange={e => updateKey(k, Number(e.target.value))} 
+            <div key={k} className="flex items-center gap-2">
+              <div className="flex-1 text-sm text-gray-200 min-w-0 truncate">{k}</div>
+              <input
+                type="number"
+                className="w-20 sm:w-28 px-2 py-1 rounded bg-gray-800 text-gray-100 border border-gray-700 text-right text-sm"
+                value={targets[k] ?? 0}
+                onChange={e => updateKey(k, Number(e.target.value))}
+                aria-label={`Target for ${k}`}
               />
             </div>
           ))}
@@ -182,10 +183,10 @@ export default function TargetAllocationPanel({ open, onClose, portfolioName, id
         </div>
 
         <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="text-sm text-gray-300">Total (By {mode === 'asset_type' ? 'Asset Type' : 'Risk'}): <span className={`font-semibold ${Math.abs(total - 100) > 0.01 ? 'text-red-400' : 'text-green-400'}`}>{total.toFixed(2)}%</span></div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <button className="px-3 py-1 rounded bg-gray-700 text-gray-200 text-sm" onClick={() => { setTargets({}); }}>Reset</button>
-            <button className="px-3 py-1 rounded bg-indigo-600 text-white font-semibold text-sm" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save Targets'}</button>
+          {/* <div className="text-sm text-gray-300">Total (By {mode === 'asset_type' ? 'Asset Type' : 'Risk'}): <span className={`font-semibold ${Math.abs(total - 100) > 0.01 ? 'text-red-400' : 'text-green-400'}`}>{total.toFixed(2)}%</span></div> */}
+          <div className="flex w-full sm:w-auto gap-2">
+            <button className="flex-1 sm:flex-none px-3 py-1 rounded bg-gray-700 text-gray-200 text-sm" onClick={() => { setTargets({}); }}>Reset</button>
+            <button className="flex-1 sm:flex-none px-3 py-1 rounded bg-indigo-600 text-white font-semibold text-sm" onClick={handleSave} disabled={saving}>{saving ? 'Saving...' : 'Save Targets'}</button>
           </div>
         </div>
         {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
@@ -197,9 +198,9 @@ export default function TargetAllocationPanel({ open, onClose, portfolioName, id
 const AddCustomKey: React.FC<{ onAdd: (k: string) => void }> = ({ onAdd }) => {
   const [val, setVal] = useState('');
   return (
-    <div className="mt-3 flex gap-2">
-      <input className="flex-1 p-2 rounded bg-gray-800 text-gray-100 border border-gray-700" placeholder="Custom key (e.g. Real Estate)" value={val} onChange={e=>setVal(e.target.value)} />
-      <button className="px-3 py-1 rounded bg-gray-700 text-gray-200" onClick={() => { const k = val.trim(); if (!k) return; onAdd(k); setVal(''); }}>Add</button>
+    <div className="mt-3 flex flex-col sm:flex-row gap-2">
+      <input className="flex-1 p-2 rounded bg-gray-800 text-gray-100 border border-gray-700 text-sm" placeholder="Custom key (e.g. Real Estate)" value={val} onChange={e=>setVal(e.target.value)} />
+      <button className="px-3 py-1 rounded bg-gray-700 text-gray-200 text-sm w-full sm:w-auto" onClick={() => { const k = val.trim(); if (!k) return; onAdd(k); setVal(''); }}>Add</button>
     </div>
   );
 };

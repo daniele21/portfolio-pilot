@@ -3,9 +3,9 @@ import { TrafficLightStatus } from '../types';
 import { MOCK_KPIS_DATA } from '../constants';
 import { fetchTickerDetails } from './marketDataService';
 import { idbGet, idbSet, idbDel } from '../utils/idbCache';
+import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 
 // const API_BASE_URL = 'https://finance-data-server-335283962900.europe-west1.run.app';
-const API_BASE_URL = 'http://127.0.0.1:5000';
 const DEFAULT_PORTFOLIO_ID = 'main'; // Or make this dynamic if multiple portfolios are supported
 
 // Cache TTLs (ms) - align with react-query defaults in main.tsx
@@ -20,8 +20,8 @@ const getAuthIdToken = (): string | null => {
 };
 
 const commonPortfolioFetch = async <T>(endpoint: string, portfolioId: string): Promise<T | null> => {
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioId}/${endpoint}`;
+  const base = cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/portfolio/${portfolioId}/${endpoint}`;
   
   console.log(`[PortfolioService] GET ${apiUrl}`);
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
@@ -108,8 +108,8 @@ export const fetchPortfolioStatusLive = async (portfolioName: string): Promise<P
 // Save the current computed status to the backend
 export const savePortfolioStatus = async (portfolioName: string): Promise<{ status: string; portfolio: string; data?: any; error?: string }> => {
   if (!portfolioName) return { status: 'error', portfolio: portfolioName, error: 'No portfolio name provided' };
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/status/save`;
+  const base = cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/portfolio/${portfolioName}/status/save`;
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronUpIcon, ChevronDownIcon, CheckIcon } from '@heroicons/react/20/solid';
 import { classNames } from '../utils/classNames';
 import type { ReturnMetrics } from '../types';
+import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 
 export interface TickerReturnsTableProps {
   portfolio: string;
@@ -15,14 +16,15 @@ export interface TickerReturnsTableProps {
 /**
  * Cool-styled ticker returns table with sortable columns.
  */
-const TickerReturnsTable: React.FC<TickerReturnsTableProps> = ({ portfolio, idToken, apiBaseUrl = 'http://127.0.0.1:5000', selectedTickers = [], onSelectedTickersChange }) => {
+const TickerReturnsTable: React.FC<TickerReturnsTableProps> = ({ portfolio, idToken, apiBaseUrl, selectedTickers = [], onSelectedTickersChange }) => {
+  const resolvedApiBase = apiBaseUrl ? apiBaseUrl.replace(/\/+$/,'') : cleanApiBaseUrl(API_BASE_URL);
   const [sortKey, setSortKey] = useState<keyof ReturnMetrics>('symbol');
   const [asc, setAsc] = useState(true);
 
   const { data: returnsData = [], isLoading, error } = useQuery({
     queryKey: ['tickerReturns', portfolio, idToken],
     queryFn: async () => {
-      const res = await fetch(`${apiBaseUrl}/api/portfolio/${portfolio}/kpis/returns`, {
+  const res = await fetch(`${resolvedApiBase}/api/portfolio/${portfolio}/kpis/returns`, {
         headers: idToken ? { Authorization: `Bearer ${idToken}` } : {}
       });
       if (!res.ok) {

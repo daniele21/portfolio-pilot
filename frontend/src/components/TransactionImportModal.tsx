@@ -102,6 +102,36 @@ const TransactionImportModal: React.FC<Props> = ({
           <p className="mt-3 text-[10px] text-gray-500">Files with recognizable tabular headers skip LLM usage. Others are parsed via Gemini.</p>
         </div>
 
+        <div className="mb-4 text-sm text-gray-300">
+          <details className="bg-gray-800 p-3 rounded">
+            <summary className="cursor-pointer font-semibold text-gray-100">Input format & examples</summary>
+            <div className="mt-2 text-xs text-gray-300">
+              <p className="mb-2">Please include the following information for each transaction (labels/names can vary):</p>
+              <ul className="list-disc list-inside space-y-1">
+                <li>
+                  Ticker / symbol compatible with 
+                  <a 
+                  href="https://finance.yahoo.com/" 
+                  target="_blank" 
+                  rel="noopener noreferrer" 
+                  className="text-indigo-400 underline hover:text-indigo-300"
+                  >
+                  Yahoo Finance
+                  </a> 
+                  (required)
+                </li>
+                <li>Quantity / shares (required)</li>
+                <li>Price per share or total price (required if available)</li>
+                <li>Date (preferably YYYY-MM-DD) (required)</li>
+                <li>Action / label (e.g. Buy, Sell, Dividend) (required)
+                </li>
+                <li>Security/company name (optional)</li>
+              </ul>
+              <p className="mt-2">Accepted file types: CSV, TSV, XLSX, XLS, PDF, TXT. Tabular files with headers are parsed locally; free-form text or PDFs are sent to the parser/LLM.</p>
+            </div>
+          </details>
+        </div>
+
         <textarea
           className="w-full h-36 p-3 rounded-lg bg-gray-800 text-gray-100 border border-gray-700 focus:ring-2 focus:ring-indigo-500 mb-4"
           value={importText}

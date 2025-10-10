@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { fetchPortfolioStatusLive } from '../services/portfolioService';
 import { PortfolioStatusResponse } from '../types';
 import { idbGet, idbSet } from '../utils/idbCache';
+import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 import { useCallback } from 'react';
 import { ArrowUpIcon, ArrowDownIcon, CheckIcon, InformationCircleIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 
@@ -98,7 +99,8 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
       const idToken = getAuthIdToken();
       if (idToken) {
         try {
-          const resp = await fetch(`http://localhost:5000/api/portfolio/${portfolioName}/status/metadata`, {
+          const base = cleanApiBaseUrl(API_BASE_URL);
+          const resp = await fetch(`${base}/api/portfolio/${portfolioName}/status/metadata`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
             body: JSON.stringify({ metadata: meta })

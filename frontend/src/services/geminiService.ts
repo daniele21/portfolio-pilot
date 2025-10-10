@@ -1,6 +1,5 @@
 import { TickerSearchResultItem } from './marketDataService';
-
-const API_BASE_URL = 'http://127.0.0.1:5000';
+import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 
 export interface GeminiSearchResponse {
   query: string;
@@ -16,7 +15,7 @@ export const geminiSearch = async (
 ): Promise<GeminiSearchResponse | null> => {
   const q = (query || '').trim();
   if (q.length < 2) return { query: q, count: 0, results: [] };
-  const base = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const base = cleanApiBaseUrl(API_BASE_URL);
   const params = new URLSearchParams({ q: q });
   if (opts?.model) params.set('model', opts.model);
   if (typeof opts?.temperature === 'number') params.set('temperature', String(opts.temperature));

@@ -113,7 +113,12 @@ const AppContent: React.FC = () => {
           <Bars3Icon className="w-5 h-5" />
         </button>
         <div className="mp-title">
-          Portfolio Pilot
+            <Link 
+            to="/portfolio-selector" 
+            className="font-bold text-lg text-white transition-colors duration-150 hover:text-blue-400 hover:underline hover:bg-blue-950 px-2 py-1 rounded"
+            >
+            Portfolio Manager
+            </Link>
           {selectedPortfolio && (
             <span className="text-sm text-gray-400 ml-2">• {selectedPortfolio}</span>
           )}

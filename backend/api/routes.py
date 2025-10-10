@@ -219,6 +219,34 @@ def get_portfolio_transactions(portfolio_name):
         return jsonify({'error': str(e)}), 500
 
 
+@bp.route('/api/portfolio/<string:portfolio_name>/tickers', methods=['GET', 'OPTIONS'])
+def get_portfolio_tickers(portfolio_name):
+    """Return a sorted list of distinct tickers found in a portfolio's transactions.
+
+    Accepts OPTIONS for CORS preflight and GET to return JSON array of tickers.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 200)
+    try:
+        from db.portfolios import get_transactions
+        txs = get_transactions(portfolio_name)
+        # Try common field names used across imports: 'ticker', 'assetSymbol', 'symbol'
+        raw = set()
+        for t in txs:
+            if not isinstance(t, dict):
+                continue
+            for key in ('ticker', 'assetSymbol', 'asset_symbol', 'symbol'):
+                val = t.get(key)
+                if isinstance(val, str) and val.strip():
+                    raw.add(val.strip())
+                    break
+        tickers = sorted(raw)
+        return jsonify(tickers), 200
+    except Exception as e:
+        current_app.logger.exception(f"Failed to fetch tickers for {portfolio_name}")
+        return jsonify({'error': str(e)}), 500
+
+
 
 @bp.route('/api/portfolio/<string:portfolio_name>/status', methods=['GET'])
 def get_portfolio_status_saved_route(portfolio_name):

@@ -1,9 +1,11 @@
 // Lightweight helpers for transaction-related backend fetches.
 // Centralizes endpoints so the page can call them instead of inlining fetch code.
 import { authFetch, googleRefreshIdToken } from '../utils/authFetch';
+import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 
 export async function fetchPortfolioTransactions(portfolio: string, idToken?: string | null) {
-  const apiUrl = `http://localhost:5000/api/portfolio/${encodeURIComponent(portfolio)}/transactions`;
+  const base = cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/portfolio/${encodeURIComponent(portfolio)}/transactions`;
   const resp = await authFetch(apiUrl, {
     method: 'GET',
     idToken,
@@ -19,7 +21,8 @@ export async function fetchPortfolioTransactions(portfolio: string, idToken?: st
 }
 
 export async function fetchPortfolioStatus(portfolio: string, idToken?: string | null) {
-  const apiUrl = `http://localhost:5000/api/portfolio/${encodeURIComponent(portfolio)}/status`;
+  const base = cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/portfolio/${encodeURIComponent(portfolio)}/status`;
   const resp = await authFetch(apiUrl, {
     method: 'GET',
     idToken,

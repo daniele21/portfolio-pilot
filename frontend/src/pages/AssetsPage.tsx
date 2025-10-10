@@ -11,7 +11,7 @@ import PageShell from '../components/PageShell';
 // --- Types ---
 // no historical types needed in this page
 
-const API_BASE_URL = 'http://127.0.0.1:5000';
+import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 
 // -----------------------------------------------------
 // Page: Asset Analysis
@@ -32,7 +32,8 @@ const AssetAnalysisPage: React.FC = () => {
         return;
       }
       try {
-        const res = await fetch(`${API_BASE_URL}/api/portfolio/${selectedPortfolio}/tickers`, {
+        const base = cleanApiBaseUrl(API_BASE_URL);
+        const res = await fetch(`${base}/api/portfolio/${selectedPortfolio}/tickers`, {
           headers: idToken ? { Authorization: `Bearer ${idToken}` } : {}
         });
         const json = await res.json();

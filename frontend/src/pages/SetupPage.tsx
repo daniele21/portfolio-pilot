@@ -29,7 +29,7 @@ import ActionButton from '../components/ActionButton';
 import TransactionImportModal from '../components/TransactionImportModal';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
 // Portfolio toolbar removed: selection is provided by SelectedPortfolioContext
-
+import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 
 const TransactionsPage: React.FC = React.memo(() => {
   const [movements, setMovements] = useState<StandardizedMovement[]>([]);
@@ -453,7 +453,8 @@ const TransactionsPage: React.FC = React.memo(() => {
     if (!id || !portfolio) return;
     setError(null);
     try {
-      const response = await fetch(`http://localhost:5000/api/portfolio/${portfolio}/transaction/${id}`, {
+      const base = cleanApiBaseUrl(API_BASE_URL);
+      const response = await fetch(`${base}/api/portfolio/${portfolio}/transaction/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
@@ -470,7 +471,7 @@ const TransactionsPage: React.FC = React.memo(() => {
         const metaKey = `status_meta:${portfolio}`;
         const localMeta = await idbGet(metaKey);
         if (localMeta && idToken) {
-          await fetch(`http://localhost:5000/api/portfolio/${portfolio}/status/metadata`, {
+          await fetch(`${base}/api/portfolio/${portfolio}/status/metadata`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
             body: JSON.stringify({ metadata: localMeta })
@@ -517,7 +518,8 @@ const TransactionsPage: React.FC = React.memo(() => {
     }
     setError(null);
     try {
-      const resp = await fetch(`http://localhost:5000/api/portfolio/${portfolio}/transaction/${id}`, {
+      const base = cleanApiBaseUrl(API_BASE_URL);
+      const resp = await fetch(`${base}/api/portfolio/${portfolio}/transaction/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
         body: JSON.stringify(updated)
@@ -531,7 +533,7 @@ const TransactionsPage: React.FC = React.memo(() => {
           const metaKey = `status_meta:${portfolio}`;
           const localMeta = await idbGet(metaKey);
           if (localMeta && idToken) {
-            await fetch(`http://localhost:5000/api/portfolio/${portfolio}/status/metadata`, {
+            await fetch(`${base}/api/portfolio/${portfolio}/status/metadata`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
               body: JSON.stringify({ metadata: localMeta })
@@ -752,7 +754,8 @@ const TransactionsPage: React.FC = React.memo(() => {
             onConfirm={async () => {
               setDeleteError(null);
               try {
-                const resp = await fetch(`http://localhost:5000/api/portfolio/${selectedPortfolio}`, {
+                const base = cleanApiBaseUrl(API_BASE_URL);
+                const resp = await fetch(`${base}/api/portfolio/${selectedPortfolio}`, {
                   method: 'DELETE',
                   headers: { 'Authorization': `Bearer ${idToken}` }
                 });

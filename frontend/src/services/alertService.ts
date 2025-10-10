@@ -1,8 +1,7 @@
 import type { AlertSettings, AlertCondition } from '../types';
 import { idbGet, idbSet, idbDel } from '../utils/idbCache';
 
-// Align with other services which use a local dev API base
-const API_BASE_URL = 'http://127.0.0.1:5000';
+import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 
 const getAuthIdToken = (): string | null => {
   try {
@@ -17,9 +16,9 @@ const ALERTS_CACHE_KEY = 'portfolio_alerts_v1';
 export const getAlertSettings = async (portfolioName: string): Promise<AlertSettings> => {
   try {
     // Try backend first
-    try {
-      const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-      const apiUrl = `${cleanApiBaseUrl}/api/alerts/${encodeURIComponent(portfolioName)}`;
+      try {
+        const base = cleanApiBaseUrl(API_BASE_URL);
+        const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}`;
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -63,8 +62,8 @@ export const saveAlertSettings = async (settings: AlertSettings): Promise<void> 
 
   // Try to persist to backend (requires auth cookie or idToken handled by client)
   try {
-    const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-    const apiUrl = `${cleanApiBaseUrl}/api/alerts/${encodeURIComponent(settings.portfolioName)}`;
+  const base = cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/alerts/${encodeURIComponent(settings.portfolioName)}`;
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
     const idToken = getAuthIdToken();
     if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -88,8 +87,8 @@ export const deleteAlertSettings = async (portfolioName: string): Promise<void> 
   try { await idbDel(`${ALERTS_CACHE_KEY}:${portfolioName}`); } catch (e) { /* ignore */ }
 
   try {
-    const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-    const apiUrl = `${cleanApiBaseUrl}/api/alerts/${encodeURIComponent(portfolioName)}`;
+  const base = cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}`;
   const headers: HeadersInit = {};
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -153,8 +152,8 @@ export const generateAlertId = (): string => {
 // Simulate checking alerts (in a real app, this would be done by a backend service)
 export const checkAlerts = async (portfolioName: string): Promise<AlertCondition[]> => {
   try {
-    const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-    const apiUrl = `${cleanApiBaseUrl}/api/alerts/${encodeURIComponent(portfolioName)}/check`;
+  const base = cleanApiBaseUrl(API_BASE_URL);
+  const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}/check`;
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
     const idToken = getAuthIdToken();
     if (idToken) headers['Authorization'] = `Bearer ${idToken}`;

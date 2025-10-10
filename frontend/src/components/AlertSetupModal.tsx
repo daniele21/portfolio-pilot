@@ -250,20 +250,24 @@ const AlertSetupModal: React.FC<AlertSetupModalProps> = ({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4" role="dialog" aria-modal="true">
-      <div className="bg-gray-900 rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-2 sm:p-4" role="dialog" aria-modal="true">
+      <div className="bg-gray-900 rounded-xl shadow-2xl w-full max-w-lg sm:max-w-2xl md:max-w-4xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-6 border-b border-gray-700">
-          <div className="flex items-center gap-3">
-            <BellIcon className="h-6 w-6 text-indigo-400" />
-            <h2 className="text-2xl font-bold text-white">Alert Settings</h2>
-            <span className="text-sm text-gray-400">for {portfolioName}</span>
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <BellIcon className="h-6 w-6 text-indigo-400 flex-shrink-0" />
+            <div className="min-w-0">
+              <h2 className="text-2xl font-bold text-white truncate">Alert Settings</h2>
+              <span className="text-sm text-gray-400 block truncate">for {portfolioName}</span>
+            </div>
           </div>
-          <ActionButton variant="ghost" size="sm" onClick={onClose}>
-            <XMarkIcon className="h-5 w-5" />
-          </ActionButton>
+          <div className="flex-shrink-0 ml-3">
+            <ActionButton variant="ghost" size="sm" onClick={onClose}>
+              <XMarkIcon className="h-5 w-5" />
+            </ActionButton>
+          </div>
         </div>
 
-        <div className="p-6">
+  <div className="p-6">
           {loading ? (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-indigo-500"></div>
@@ -280,7 +284,7 @@ const AlertSetupModal: React.FC<AlertSetupModalProps> = ({
               {/* Notification Settings */}
               <div className="mb-6">
                 <h3 className="text-lg font-semibold text-white mb-3">Notification Preferences</h3>
-                <div className="flex gap-4">
+                <div className="flex flex-col sm:flex-row gap-4">
                   <label className="flex items-center gap-2 text-sm text-gray-300">
                     <input
                       type="checkbox"
@@ -304,10 +308,11 @@ const AlertSetupModal: React.FC<AlertSetupModalProps> = ({
 
               {/* Alert Conditions */}
               <div className="mb-6">
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-3 gap-3">
                   <h3 className="text-lg font-semibold text-white">Alert Conditions</h3>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2 w-full">
                     <ActionButton
+                      className="w-full sm:w-auto justify-center"
                       variant="secondary"
                       size="sm"
                       onClick={() => addCondition('volatility')}
@@ -316,6 +321,7 @@ const AlertSetupModal: React.FC<AlertSetupModalProps> = ({
                       Volatility
                     </ActionButton>
                     <ActionButton
+                      className="w-full sm:w-auto justify-center"
                       variant="secondary"
                       size="sm"
                       onClick={() => addCondition('portfolio_return')}
@@ -324,6 +330,7 @@ const AlertSetupModal: React.FC<AlertSetupModalProps> = ({
                       Portfolio Performance
                     </ActionButton>
                     <ActionButton
+                      className="w-full sm:w-auto justify-center"
                       variant="secondary"
                       size="sm"
                       onClick={() => addCondition('ticker_return')}
@@ -348,17 +355,18 @@ const AlertSetupModal: React.FC<AlertSetupModalProps> = ({
               </div>
 
               {/* Actions */}
-              <div className="flex justify-between items-center gap-3 pt-4 border-t border-gray-700">
-                <div>
-                  <ActionButton variant="danger" size="md" onClick={handleReset} disabled={saving}>
+              <div className="flex flex-col-reverse sm:flex-row justify-between items-stretch sm:items-center gap-3 pt-4 border-t border-gray-700">
+                <div className="w-full sm:w-auto">
+                  <ActionButton className="w-full sm:w-auto" variant="danger" size="md" onClick={handleReset} disabled={saving}>
                     Reset
                   </ActionButton>
                 </div>
-                <div className="flex gap-3">
-                  <ActionButton variant="ghost" size="md" onClick={onClose}>
+                <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                  <ActionButton className="w-full sm:w-auto" variant="ghost" size="md" onClick={onClose}>
                     Cancel
                   </ActionButton>
                   <ActionButton
+                    className="w-full sm:w-auto"
                     variant="primary"
                     size="md"
                     onClick={handleSave}
