@@ -1,16 +1,25 @@
 {
-  "name": "PortfolioPilot",
-  "short_name": "PortfolioPilot",
+  "name": "Portfolio Manager",
+  "short_name": "Portfolio Manager",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait-primary",
   "background_color": "#0b1220",
   "theme_color": "#0b1220",
   "description": "Modern portfolio analysis and advisor assistant.",
+  "categories": ["finance", "productivity"],
   "icons": [
     {
-      "src": "/vite.svg",
+      "src": "/icons/portfolio_manager_192x192.png",
       "sizes": "192x192",
-      "type": "image/svg+xml",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/portfolio_manager_512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "any"
     }
   ]
