@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
-import HomePage from './pages/HomePage';
+// HomePage was removed / renamed; using SimpleHome from pages/home/HomePage instead
 import SettingsPage from './pages/SettingsPage';
 import TransactionsPage from './pages/SetupPage';
 import TickerInfoPage from './pages/TickerInfoPage';

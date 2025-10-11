@@ -34,6 +34,24 @@ def require_google_token():
                 if 'expired' in msg.lower() or 'token expired' in msg.lower():
                     return jsonify({"error": "token_expired", "message": msg}), 401
                 return jsonify({"error": f"Invalid token: {msg}"}), 401
+            # Authorization: optional allowlist by email or by hosted domain
+            # Configuration (comma-separated values):
+            #   ALLOWED_EMAILS=alice@example.com,bob@example.com
+            #   ALLOWED_DOMAINS=example.com,another.org
+            allowed_emails_raw = os.environ.get('ALLOWED_EMAILS', '')
+            allowed_domains_raw = os.environ.get('ALLOWED_DOMAINS', '')
+            allowed_emails = {e.strip().lower() for e in allowed_emails_raw.split(',') if e.strip()}
+            allowed_domains = {d.strip().lower() for d in allowed_domains_raw.split(',') if d.strip()}
+
+            # If any allowlist is set, enforce membership of either the email or the domain
+            if allowed_emails or allowed_domains:
+                user_email = (id_info.get('email') or '').lower()
+                user_domain = user_email.split('@')[-1] if '@' in user_email else ''
+                email_ok = (user_email in allowed_emails) if allowed_emails else False
+                domain_ok = (user_domain in allowed_domains) if allowed_domains else False
+                if not (email_ok or domain_ok):
+                    current_app.logger.warning(f"Unauthorized user trying to access: {user_email}")
+                    return jsonify({"error": "forbidden", "message": "Your account is not authorized to access this service."}), 403
             return f(*args, **kwargs)
         return wrapped
     return decorator

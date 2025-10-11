@@ -31,3 +31,4 @@ dist-ssr
 #. Local environment variables (do NOT commit .env)
 .env
 firestore-access.json
+deploy
