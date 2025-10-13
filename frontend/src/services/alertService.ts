@@ -2,6 +2,7 @@ import type { AlertSettings, AlertCondition } from '../types';
 import { idbGet, idbSet, idbDel } from '../utils/idbCache';
 
 import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
+import { authFetch, googleRefreshIdToken } from '../utils/authFetch';
 
 const getAuthIdToken = (): string | null => {
   try {
@@ -17,12 +18,12 @@ export const getAlertSettings = async (portfolioName: string): Promise<AlertSett
   try {
     // Try backend first
       try {
-        const base = cleanApiBaseUrl(API_BASE_URL);
-        const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}`;
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  const resp = await fetch(apiUrl, { headers });
+    const base = cleanApiBaseUrl(API_BASE_URL);
+    const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}`;
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    const idToken = getAuthIdToken();
+    // Use authFetch so expired tokens can be refreshed automatically via GSI
+    const resp = await authFetch(apiUrl, { method: 'GET', headers, idToken, refresh: googleRefreshIdToken });
       if (resp.ok) {
         const data = await resp.json();
         if (data && data.alerts) {
@@ -66,11 +67,12 @@ export const saveAlertSettings = async (settings: AlertSettings): Promise<void> 
   const apiUrl = `${base}/api/alerts/${encodeURIComponent(settings.portfolioName)}`;
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
     const idToken = getAuthIdToken();
-    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-    const resp = await fetch(apiUrl, {
+    const resp = await authFetch(apiUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify({ alerts: settings }),
+      idToken,
+      refresh: googleRefreshIdToken,
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
@@ -91,8 +93,7 @@ export const deleteAlertSettings = async (portfolioName: string): Promise<void> 
   const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}`;
   const headers: HeadersInit = {};
   const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  const resp = await fetch(apiUrl, { method: 'DELETE', headers });
+  const resp = await authFetch(apiUrl, { method: 'DELETE', headers, idToken, refresh: googleRefreshIdToken });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
       throw new Error(data.error || 'Failed to delete alerts on server');
@@ -156,8 +157,7 @@ export const checkAlerts = async (portfolioName: string): Promise<AlertCondition
   const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}/check`;
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
     const idToken = getAuthIdToken();
-    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-    const resp = await fetch(apiUrl, { headers });
+    const resp = await authFetch(apiUrl, { method: 'GET', headers, idToken, refresh: googleRefreshIdToken });
     if (!resp.ok) return [];
     const data = await resp.json();
     if (data && Array.isArray(data.triggered)) {

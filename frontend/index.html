@@ -9,8 +9,9 @@
       name="description"
       content="PortfolioPilot - Modern Portfolio Management"
     />
-  <link rel="apple-touch-icon" href="/icons/portfolio_manager_192x192.png" />
-    <link rel="manifest" href="/public/manifest.json" />
+  <!-- <link rel="apple-touch-icon" href="/icons/portfolio_manager_icon_192x192.png" /> -->
+  <link rel="icon" type="image/x-icon" href="/icons/portfolio_manager_icon_192x192.png" />
+    <link rel="manifest" href="/manifest.json" />
     <title>Portfolio Manager</title>
     <script src="https://cdn.tailwindcss.com"></script> <!-- Added Tailwind CSS -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -19,21 +20,32 @@
       (function() {
         try {
           var xhr = new XMLHttpRequest();
+          // use a root-relative path so it works even when the site is hosted under a subpath
           xhr.open('GET', '/config.json', false); // synchronous on purpose for bootstrap
           xhr.send(null);
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
               var cfg = JSON.parse(xhr.responseText);
-              if (cfg && cfg.API_BASE_URL) {
-                window.__API_BASE_URL__ = cfg.API_BASE_URL;
-                console.log('[config] API_BASE_URL set to', cfg.API_BASE_URL);
+              if (cfg) {
+                // accept either API_BASE_URL (preferred) or VITE_API_URL (older convention)
+                var val = cfg.API_BASE_URL || cfg.VITE_API_URL;
+                if (typeof val === 'string' && val.trim()) {
+                  window.__API_BASE_URL__ = val.trim();
+                  console.log('[config] runtime config set window.__API_BASE_URL__ =', val.trim());
+                } else {
+                  console.warn('[config] config.json found but no API_BASE_URL/VITE_API_URL');
+                }
               }
             } catch (e) {
-              // invalid JSON -> ignore
+              console.warn('[config] failed to parse /config.json:', e && e.message ? e.message : e);
             }
+          } else {
+            // non-2xx status (404 common) - log for debugging
+            console.info('[config] /config.json not found (status ' + xhr.status + ')');
           }
         } catch (e) {
           // failure (network / CORS / not found) -> ignore and let app fallback
+          console.info('[config] /config.json load failed:', e && e.message ? e.message : e);
         }
       })();
     </script>

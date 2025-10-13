@@ -11,13 +11,13 @@
   "categories": ["finance", "productivity"],
   "icons": [
     {
-      "src": "/icons/portfolio_manager_192x192.png",
+      "src": "/icons/portfolio_manager_icon_192x192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/portfolio_manager_512x512.png",
+      "src": "/icons/portfolio_manager_icon_512x512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
