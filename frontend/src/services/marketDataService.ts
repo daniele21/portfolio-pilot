@@ -1,5 +1,6 @@
 import { HistoricalDataPoint, BackendTickerResponse, BackendTickerHistoryItem } from '../types';
 import { API_BASE_URL, cleanApiBaseUrl as _cleanApiBaseUrl } from '../apiBase';
+import { apiFetch } from '../utils/apiFetch';
 
 export const getAuthIdToken = (): string | null => {
   return localStorage.getItem('idToken');
@@ -18,46 +19,14 @@ const commonFetch = async (apiUrl: string, symbolForLogging: string): Promise<Ba
     // For this app, auth is generally required by the backend.
   }
 
-  try {
-    const response = await fetch(apiUrl, { headers });
-
-    if (!response.ok) {
-      let errorDataMessage = `Status ${response.status}: ${response.statusText}.`;
-      try {
-        const errorData = await response.json();
-        errorDataMessage += ` Server message: ${errorData.error || JSON.stringify(errorData)}`;
-      } catch (e) { /* Ignore if error body isn't JSON */ }
-      console.error(`MarketDataService: API request failed for ${symbolForLogging} at ${apiUrl}. ${errorDataMessage}`);
-      // Construct a BackendTickerResponse-like error object to propagate the error consistently
-      return { 
-        source: "CLIENT_ERROR", 
-        ticker: symbolForLogging, 
-        error: `API request failed: ${response.status} ${response.statusText}` 
-      };
-    }
-
-    const backendResponse: BackendTickerResponse = await response.json();
-    if (backendResponse.error) {
-        console.warn(`MarketDataService: Backend returned an error for ${symbolForLogging}: ${backendResponse.error}`);
-    }
-    return backendResponse;
-
-  } catch (error) {
-    let detailedErrorMessage = `MarketDataService: Network or parsing error for ${symbolForLogging} at ${apiUrl}.`;
-    if (error instanceof TypeError && error.message.toLowerCase().includes("failed to fetch")) {
-        detailedErrorMessage = `MarketDataService: "Failed to fetch" for ${symbolForLogging} from ${apiUrl}. This often indicates a CORS issue, network problem, or the server is down. Ensure the backend allows requests from this origin and handles Authorization headers correctly, especially for error responses.`;
-    } else if (error instanceof Error) {
-        detailedErrorMessage += ` Details: ${error.message}`;
-    } else {
-        detailedErrorMessage += ` Unknown error: ${String(error)}`;
-    }
-    console.error(detailedErrorMessage, error);
-    return { 
-        source: "CLIENT_ERROR", 
-        ticker: symbolForLogging, 
-        error: "Network error or failed to parse response." 
-    };
+  const { ok, data, error } = await apiFetch<BackendTickerResponse>(apiUrl, { headers });
+  if (!ok || !data) {
+    return { source: 'CLIENT_ERROR', ticker: symbolForLogging, error: error || 'API request failed' } as BackendTickerResponse;
   }
+  if ((data as BackendTickerResponse).error) {
+    console.warn(`MarketDataService: Backend returned an error for ${symbolForLogging}: ${(data as BackendTickerResponse).error}`);
+  }
+  return data as BackendTickerResponse;
 };
 
 
@@ -68,7 +37,7 @@ export const fetchHistoricalMarketPrices = async (
 ): Promise<HistoricalDataPoint[] | null> => {
   const base = _cleanApiBaseUrl(API_BASE_URL);
   // The backend /api/ticker/<symbol> returns all available history. Filtering by date is done client-side.
-  const apiUrl = `${base}/api/ticker/${symbol.toUpperCase()}`;
+  const apiUrl = `${base}/api/ticker/${encodeURIComponent(symbol.toUpperCase())}`;
 
   const backendResponse = await commonFetch(apiUrl, symbol);
 
@@ -94,7 +63,7 @@ export const fetchHistoricalMarketPrices = async (
 
 export const fetchTickerDetails = async (symbol: string): Promise<BackendTickerResponse | null> => {
   const base = _cleanApiBaseUrl(API_BASE_URL);
-  const apiUrl = `${base}/api/ticker/${symbol.toUpperCase()}`;
+  const apiUrl = `${base}/api/ticker/${encodeURIComponent(symbol.toUpperCase())}`;
   
   const response = await commonFetch(apiUrl, symbol);
   // console.log(`MarketDataService: fetchTickerDetails response for ${symbol}`, response);
@@ -126,16 +95,9 @@ export const searchTickers = async (query: string, provider: 'gemini' | 'yahoo' 
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`; // optional (endpoint currently public)
-  try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) {
-      return { query: q, count: 0, results: [], error: `HTTP ${response.status}` };
-    }
-    const json = await response.json();
-    return json as TickerSearchResponse;
-  } catch (e: any) {
-    return { query: q, count: 0, results: [], error: e?.message || 'network error' };
-  }
+  const { ok, data, error } = await apiFetch<TickerSearchResponse>(apiUrl, { headers });
+  if (!ok || !data) return { query: q, count: 0, results: [], error: error || 'request failed' };
+  return data as TickerSearchResponse;
 };
 
 export const fetchBenchmarkPerformance = async (symbol: string): Promise<HistoricalDataPoint[] | null> => {
@@ -144,13 +106,7 @@ export const fetchBenchmarkPerformance = async (symbol: string): Promise<Histori
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken ? getAuthIdToken() : null;
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) return null;
-    const data = await response.json();
-    // The backend returns a list of {date, value, abs_value, pct}
-    return Array.isArray(data) ? data : null;
-  } catch (e) {
-    return null;
-  }
+  const { ok, data } = await apiFetch<any>(apiUrl, { headers });
+  if (!ok || !data) return null;
+  return Array.isArray(data) ? data : null;
 };

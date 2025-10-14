@@ -78,6 +78,12 @@ export async function authFetch(url: string, opts: AuthFetchOptions = {}): Promi
           resp = await fetch(url, { ...rest, headers: retryHeaders });
           return resp; // return retry response
         }
+        // If we couldn't refresh, emit a global event so the app can react (e.g. show re-login UI)
+        try {
+          window.dispatchEvent(new CustomEvent('auth:token_expired', { detail: { url } }));
+        } catch (e) {
+          console.warn('[authFetch] failed to dispatch auth:token_expired event', e);
+        }
       }
     } catch (e) {
       console.warn('[authFetch] refresh on 401 failed:', e);

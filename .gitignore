@@ -32,3 +32,5 @@ dist-ssr
 .env
 firestore-access.json
 deploy
+frontend/icons/
+.firebase/hosting.ZnJvbnRlbmQvZGlzdA.cache

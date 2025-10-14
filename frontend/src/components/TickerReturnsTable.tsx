@@ -4,6 +4,7 @@ import { ChevronUpIcon, ChevronDownIcon, CheckIcon } from '@heroicons/react/20/s
 import { classNames } from '../utils/classNames';
 import type { ReturnMetrics } from '../types';
 import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
+import { apiFetch } from '../utils/apiFetch';
 
 export interface TickerReturnsTableProps {
   portfolio: string;
@@ -24,14 +25,10 @@ const TickerReturnsTable: React.FC<TickerReturnsTableProps> = ({ portfolio, idTo
   const { data: returnsData = [], isLoading, error } = useQuery({
     queryKey: ['tickerReturns', portfolio, idToken],
     queryFn: async () => {
-  const res = await fetch(`${resolvedApiBase}/api/portfolio/${portfolio}/kpis/returns`, {
-        headers: idToken ? { Authorization: `Bearer ${idToken}` } : {}
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`HTTP ${res.status}: ${text}`);
+      const { ok, data: json, error } = await apiFetch<any>(`${resolvedApiBase}/api/portfolio/${portfolio}/kpis/returns`, { idToken });
+      if (!ok || !json) {
+        throw new Error(error || 'Failed to fetch returns');
       }
-      const json = await res.json();
       // Map backend period names to frontend period names
       const periodMapping: Record<string, string> = {
         'daily': 'yesterday_return',

@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request, current_app
-from api.auth import require_google_token
+from api.auth import require_google_token, get_request_user_id, get_request_user_id_or_error
+import os
 from api.utils import safe_get_json
 from datetime import datetime, timedelta
 import math
@@ -34,12 +35,50 @@ def _set_intraday_cache(key: str, data):
 bp = Blueprint('api', __name__)
 
 
+# Enforce authentication for all API routes by default.
+# Individual handlers can still call get_request_user_id_or_error() if they
+# need the uid; this before_request ensures an Authorization header with a
+# valid Google ID token is present for non-OPTIONS requests.
+from api.auth import get_request_user_id_or_error
+
+
+@bp.before_request
+def require_auth_for_all_api():
+    # Allow CORS preflight requests without auth
+    if request.method == 'OPTIONS':
+        return None
+    # Validate token and return the error response if token invalid/expired
+    uid, err = get_request_user_id_or_error()
+    if err:
+        return err
+    # Otherwise allow the request to proceed; handlers can call get_request_user_id()
+    return None
+
+
 @bp.route('/api/portfolios', methods=['GET'])
 def get_all_portfolios():
     try:
-        from db.database import get_all_portfolio_names
-        names = get_all_portfolio_names()
-        current_app.logger.info(f"[DEBUG] /api/portfolios result: {names}")
+        # Prefer user-scoped portfolios when the request includes a valid ID token.
+        # This keeps the endpoint backwards-compatible: unauthenticated requests
+        # will still return the legacy top-level portfolios collection.
+        from db.portfolios import get_all_portfolio_names, get_all_portfolio_names_user
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+
+        uid = None
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            # Let the client know the token is expired so it can attempt a refresh
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+
+        if uid:
+            names = get_all_portfolio_names_user(uid)
+        else:
+            names = get_all_portfolio_names()
+
+        current_app.logger.info(f"[DEBUG] /api/portfolios result (uid={uid}): {names}")
         return jsonify({'portfolios': names})
     except Exception as e:
         current_app.logger.error(f"Failed to fetch portfolio names: {e}")
@@ -138,8 +177,24 @@ def add_transactions(portfolio_name):
             return jsonify({'error': str(e)}), 400
     if not transactions:
         return jsonify({'error': 'No transactions provided'}), 400
-    from db.portfolios import save_transactions
-    inserted = save_transactions(portfolio_name, transactions)
+    from db.portfolios import save_transactions, save_transactions_user
+    from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+    try:
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+    except TokenExpiredError as e:
+        return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+    except TokenInvalidError as e:
+        return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+    if uid:
+        inserted = save_transactions_user(uid, portfolio_name, transactions)
+    else:
+        inserted = save_transactions(portfolio_name, transactions)
     for transaction in inserted:
         transaction['name'] = transaction.get('name')
     return jsonify({'status': 'saved', 'count': len(inserted), 'transactions': inserted})
@@ -155,7 +210,7 @@ def ingest_transactions(portfolio_name):
 
     Returns inserted transactions or validation errors.
     """
-    from db.portfolios import save_transactions
+    from db.portfolios import save_transactions, save_transactions_user
     from core.ingestion import (
         extract_transactions_from_file,
         validate_transactions,
@@ -195,7 +250,19 @@ def ingest_transactions(portfolio_name):
     cleaned = validate_transactions(all_transactions, portfolio_name)
     if not cleaned:
         return jsonify({'error': 'No valid transactions extracted'}), 400
-    inserted = save_transactions(portfolio_name, cleaned)
+    from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+    try:
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+    except TokenExpiredError as e:
+        return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+    except TokenInvalidError as e:
+        return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+    if uid:
+        inserted = save_transactions_user(uid, portfolio_name, cleaned)
+    else:
+        inserted = save_transactions(portfolio_name, cleaned)
     return jsonify({
         'status': 'saved',
         'portfolio': portfolio_name,
@@ -209,8 +276,21 @@ def ingest_transactions(portfolio_name):
 @bp.route('/api/portfolio/<string:portfolio_name>/transactions', methods=['GET'])
 def get_portfolio_transactions(portfolio_name):
     try:
-        from db.portfolios import get_transactions
-        transactions = get_transactions(portfolio_name)
+        from db.portfolios import get_transactions, get_transactions_user
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+            try:
+                uid = get_request_user_id()
+            except TokenExpiredError as e:
+                return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+            except TokenInvalidError as e:
+                return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        transactions = get_transactions_user(uid, portfolio_name) if uid else get_transactions(portfolio_name)
         for t in transactions:
             t['name'] = t.get('name')
         return jsonify({'transactions': transactions})
@@ -228,8 +308,15 @@ def get_portfolio_tickers(portfolio_name):
     if request.method == 'OPTIONS':
         return ('', 200)
     try:
-        from db.portfolios import get_transactions
-        txs = get_transactions(portfolio_name)
+        from db.portfolios import get_transactions, get_transactions_user
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        txs = get_transactions_user(uid, portfolio_name) if uid else get_transactions(portfolio_name)
         # Try common field names used across imports: 'ticker', 'assetSymbol', 'symbol'
         raw = set()
         for t in txs:
@@ -251,8 +338,24 @@ def get_portfolio_tickers(portfolio_name):
 @bp.route('/api/portfolio/<string:portfolio_name>/status', methods=['GET'])
 def get_portfolio_status_saved_route(portfolio_name):
     try:
-        from db.portfolios import get_portfolio_status_saved
-        status, last_updated, updated_at = get_portfolio_status_saved(portfolio_name)
+        from db.portfolios import get_portfolio_status_saved, get_portfolio_status_saved_user
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+            try:
+                uid = get_request_user_id()
+            except TokenExpiredError as e:
+                return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+            except TokenInvalidError as e:
+                return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        if uid:
+            status, last_updated, updated_at = get_portfolio_status_saved_user(uid, portfolio_name)
+        else:
+            status, last_updated, updated_at = get_portfolio_status_saved(portfolio_name)
         # Serialize datetimes
         last_updated_iso = last_updated.isoformat() if last_updated else None
         return jsonify({'status': status, 'last_updated': last_updated_iso}), 200
@@ -272,7 +375,39 @@ def get_portfolio_status_options(portfolio_name):
 def get_portfolio_status_live_route(portfolio_name):
     try:
         from core.portfolio import get_portfolio_status
-        status = get_portfolio_status(portfolio_name)
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+            try:
+                uid = get_request_user_id()
+            except TokenExpiredError as e:
+                return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+            except TokenInvalidError as e:
+                return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        status = get_portfolio_status(portfolio_name, uid=uid)
+        # Persist live-computed status/holdings to Firestore so callers that
+        # fetch saved status later will see the freshly computed data.
+        try:
+            from db.portfolios import save_portfolio_status, save_portfolio_status_user
+            if uid:
+                try:
+                    save_portfolio_status_user(uid, portfolio_name, status)
+                except Exception:
+                    # best-effort; don't make live API fail because of save problems
+                    current_app.logger.exception('Failed to save live status for user portfolio')
+            else:
+                try:
+                    save_portfolio_status(portfolio_name, status)
+                except Exception:
+                    current_app.logger.exception('Failed to save live status for portfolio')
+        except Exception:
+            # If import or save fails, log and continue returning live status
+            current_app.logger.exception('Failed to persist live status (import/save step)')
+
         return jsonify({'status': status}), 200
     except Exception as e:
         current_app.logger.exception(f"Failed to compute live status for {portfolio_name}")
@@ -288,11 +423,18 @@ def portfolio_risk_route(portfolio_name):
     and return the newly generated analysis.
     """
     try:
-        from db.reports import get_portfolio_report, save_portfolio_report
+        from db.reports import get_portfolio_report, save_portfolio_report, get_portfolio_report_user, save_portfolio_report_user
         from datetime import datetime
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
 
         # Try to load existing report for today
-        existing = get_portfolio_report(portfolio_name)
+        existing = get_portfolio_report_user(uid, portfolio_name) if uid else get_portfolio_report(portfolio_name)
         if existing is not None:
             ref_date = existing.get('reference_date')
             if ref_date:
@@ -308,8 +450,8 @@ def portfolio_risk_route(portfolio_name):
 
         # No fresh report found => compute
         from core.portfolio import get_portfolio_status, get_cached_portfolio_performance
-        status = get_portfolio_status(portfolio_name)
-        returns = get_cached_portfolio_performance(portfolio_name)
+        status = get_portfolio_status(portfolio_name, uid=uid)
+        returns = get_cached_portfolio_performance(portfolio_name, uid=uid)
 
         from services.gemini_portfolio_risk import gemini_portfolio_risk_analysis
         res = gemini_portfolio_risk_analysis(status, returns)
@@ -322,7 +464,10 @@ def portfolio_risk_route(portfolio_name):
             return jsonify({'error': error or 'No analysis returned'}), 500
 
         report_to_save = analysis if isinstance(analysis, dict) else {'raw': analysis, 'parse_error': error}
-        save_portfolio_report(portfolio_name, report_to_save, reference_date=reference_date, cost=cost)
+        if uid:
+            save_portfolio_report_user(uid, portfolio_name, report_to_save, reference_date=reference_date, cost=cost)
+        else:
+            save_portfolio_report(portfolio_name, report_to_save, reference_date=reference_date, cost=cost)
         return jsonify({'report': report_to_save, 'cost': cost, 'reference_date': reference_date}), 200
     except Exception as e:
         current_app.logger.exception(f"Failed to compute or fetch portfolio risk for {portfolio_name}")
@@ -349,7 +494,14 @@ def portfolio_sumup_route(portfolio_name):
       3. Save and return the generated summary (or raw text + error if JSON parse failed).
     """
     try:
-        from db.reports import get_portfolio_sumup, save_portfolio_sumup, get_portfolio_report
+        from db.reports import (
+            get_portfolio_sumup,
+            save_portfolio_sumup,
+            get_portfolio_sumup_user,
+            save_portfolio_sumup_user,
+            get_portfolio_report,
+            get_portfolio_report_user,
+        )
         from core.portfolio import (
             get_cached_portfolio_performance,
             get_portfolio_status,
@@ -360,13 +512,20 @@ def portfolio_sumup_route(portfolio_name):
         from services.gemini_portfolio_sumup import gemini_portfolio_sumup
 
         # 1. Try Firestore daily doc first
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
         today_date = datetime.utcnow().strftime('%Y-%m-%d')
-        existing = get_portfolio_sumup(portfolio_name, today_date)
+        existing = get_portfolio_sumup_user(uid, portfolio_name, today_date) if uid else get_portfolio_sumup(portfolio_name, today_date)
         if existing is not None:
             return jsonify({'sumup': existing.get('sumup'), 'cost': existing.get('cost'), 'reference_date': existing.get('reference_date'), 'cached': True}), 200
 
         # 2. Gather context
-        performance = get_cached_portfolio_performance(portfolio_name) or []
+        performance = get_cached_portfolio_performance(portfolio_name, uid=uid) or []
 
         # Full RETURNS KPIs (reuse same underlying core functions as /kpis/returns endpoint) - simplified aggregation
         returns_kpis = {}
@@ -381,13 +540,13 @@ def portfolio_sumup_route(portfolio_name):
                 get_one_year_return,
             )
             raw = {
-                'daily': get_last_day_possible_returns(portfolio_name),
-                'three_days': get_last_three_days_returns(portfolio_name),
-                'weekly': get_weekly_returns(portfolio_name),
-                'monthly': get_monthly_returns(portfolio_name),
-                'three_month': get_three_month_returns(portfolio_name),
-                'ytd': get_ytd_returns(portfolio_name),
-                'one_year': get_one_year_return(portfolio_name),
+                'daily': get_last_day_possible_returns(portfolio_name, uid=uid),
+                'three_days': get_last_three_days_returns(portfolio_name, uid=uid),
+                'weekly': get_weekly_returns(portfolio_name, uid=uid),
+                'monthly': get_monthly_returns(portfolio_name, uid=uid),
+                'three_month': get_three_month_returns(portfolio_name, uid=uid),
+                'ytd': get_ytd_returns(portfolio_name, uid=uid),
+                'one_year': get_one_year_return(portfolio_name, uid=uid),
             }
             for key, period_obj in raw.items():
                 if not isinstance(period_obj, dict):
@@ -417,16 +576,16 @@ def portfolio_sumup_route(portfolio_name):
             returns_kpis = {}
 
         # risk report (already daily cached in its own doc)
-        risk_existing = get_portfolio_report(portfolio_name)
+        risk_existing = get_portfolio_report_user(uid, portfolio_name) if uid else get_portfolio_report(portfolio_name)
         risk_report = (risk_existing or {}).get('report') if risk_existing else None
 
         # allocation (overall, by category, by risk, combined category_risk, and by asset_type)
         allocation_combined = {}
         try:
             from core.portfolio import get_overall_asset_allocation, get_asset_allocation_by_category_and_risk, get_asset_allocation_by_asset_type
-            overall_alloc = get_overall_asset_allocation(portfolio_name)
-            cat_risk_full = get_asset_allocation_by_category_and_risk(portfolio_name)
-            asset_type_full = get_asset_allocation_by_asset_type(portfolio_name)
+            overall_alloc = get_overall_asset_allocation(portfolio_name, uid=uid)
+            cat_risk_full = get_asset_allocation_by_category_and_risk(portfolio_name, uid=uid)
+            asset_type_full = get_asset_allocation_by_asset_type(portfolio_name, uid=uid)
             allocation_combined = {
                 'overall': overall_alloc,
                 'by_category': cat_risk_full.get('by_category') if isinstance(cat_risk_full, dict) else {},
@@ -440,7 +599,7 @@ def portfolio_sumup_route(portfolio_name):
 
         # volatility (compute key scalar metrics)
         try:
-            vol = compute_portfolio_volatility(portfolio_name)
+            vol = compute_portfolio_volatility(portfolio_name, uid=uid)
             # Expect vol to maybe be dict; ensure we pass through
             volatility = vol if isinstance(vol, dict) else {'volatility': vol}
         except Exception:
@@ -463,7 +622,10 @@ def portfolio_sumup_route(portfolio_name):
             return jsonify({'error': error or 'Failed to generate summary'}), 500
 
         # 4. Persist (only if parsed JSON or string summary exists)
-        save_portfolio_sumup(portfolio_name, summary, reference_date=reference_date, cost=cost)
+        if uid:
+            save_portfolio_sumup_user(uid, portfolio_name, summary, reference_date=reference_date, cost=cost)
+        else:
+            save_portfolio_sumup(portfolio_name, summary, reference_date=reference_date, cost=cost)
         return jsonify({'sumup': summary, 'cost': cost, 'reference_date': reference_date, 'cached': False, 'error': error}), 200
     except Exception as e:
         current_app.logger.exception(f"Failed to compute or fetch portfolio sumup for {portfolio_name}")
@@ -479,9 +641,19 @@ def portfolio_sumup_options(portfolio_name):
 def save_portfolio_status_route(portfolio_name):
     try:
         from core.portfolio import get_portfolio_status
-        from db.portfolios import save_portfolio_status
-        status = get_portfolio_status(portfolio_name)
-        save_portfolio_status(portfolio_name, status)
+        from db.portfolios import save_portfolio_status, save_portfolio_status_user
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        status = get_portfolio_status(portfolio_name, uid=uid)
+        if uid:
+            save_portfolio_status_user(uid, portfolio_name, status)
+        else:
+            save_portfolio_status(portfolio_name, status)
         return jsonify({'status': 'saved', 'portfolio': portfolio_name}), 200
     except Exception as e:
         current_app.logger.exception(f"Failed to save status for {portfolio_name}")
@@ -505,8 +677,18 @@ def save_portfolio_status_metadata_route(portfolio_name):
     if not isinstance(metadata, dict):
         return jsonify({'error': 'Invalid metadata payload'}), 400
     try:
-        from db.portfolios import save_holdings_metadata
-        save_holdings_metadata(portfolio_name, metadata)
+        from db.portfolios import save_holdings_metadata, save_holdings_metadata_user
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        if uid:
+            save_holdings_metadata_user(uid, portfolio_name, metadata)
+        else:
+            save_holdings_metadata(portfolio_name, metadata)
         return jsonify({'status': 'saved', 'portfolio': portfolio_name}), 200
     except Exception as e:
         current_app.logger.exception('Failed to save holdings metadata')
@@ -537,8 +719,18 @@ def save_portfolio_status_targets_route(portfolio_name):
     if not isinstance(targets, dict):
         return jsonify({'error': 'Invalid targets payload'}), 400
     try:
-        from db.portfolios import save_portfolio_targets
-        save_portfolio_targets(portfolio_name, mode, targets)
+        from db.portfolios import save_portfolio_targets, save_portfolio_targets_user
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        if uid:
+            save_portfolio_targets_user(uid, portfolio_name, mode, targets)
+        else:
+            save_portfolio_targets(portfolio_name, mode, targets)
         return jsonify({'status': 'saved', 'portfolio': portfolio_name}), 200
     except Exception as e:
         current_app.logger.exception('Failed to save portfolio targets')
@@ -555,9 +747,19 @@ def save_portfolio_status_targets_options(portfolio_name):
 def get_portfolio_alerts(portfolio_name):
     try:
         current_app.logger.info(f"GET /api/alerts requested for portfolio: {portfolio_name}")
-        from db.firestore_client import _ensure_client
+        from db.firestore_client import _ensure_client, user_collection
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
         client = _ensure_client()
-        doc = client.collection('alerts').document(portfolio_name).get()
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        if uid:
+            doc = user_collection(client, uid, 'alerts').document(portfolio_name).get()
+        else:
+            doc = client.collection('alerts').document(portfolio_name).get()
         if not doc.exists:
             return jsonify({'alerts': None}), 200
         data = doc.to_dict() or {}
@@ -586,9 +788,19 @@ def save_portfolio_alerts(portfolio_name):
     if alerts is None or not isinstance(alerts, dict):
         return jsonify({'error': 'Missing or invalid alerts payload'}), 400
     try:
-        from db.firestore_client import _ensure_client
+        from db.firestore_client import _ensure_client, user_collection
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
         client = _ensure_client()
-        client.collection('alerts').document(portfolio_name).set(alerts)
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        if uid:
+            user_collection(client, uid, 'alerts').document(portfolio_name).set(alerts)
+        else:
+            client.collection('alerts').document(portfolio_name).set(alerts)
         return jsonify({'status': 'saved'}), 200
     except Exception as e:
         current_app.logger.exception(f'Failed to save alerts for {portfolio_name}')
@@ -604,9 +816,19 @@ def alerts_options(portfolio_name):
 @require_google_token()
 def delete_portfolio_alerts(portfolio_name):
     try:
-        from db.firestore_client import _ensure_client
+        from db.firestore_client import _ensure_client, user_collection
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
         client = _ensure_client()
-        doc_ref = client.collection('alerts').document(portfolio_name)
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        if uid:
+            doc_ref = user_collection(client, uid, 'alerts').document(portfolio_name)
+        else:
+            doc_ref = client.collection('alerts').document(portfolio_name)
         doc = doc_ref.get()
         if not doc.exists:
             return jsonify({'status': 'not_found'}), 404
@@ -631,9 +853,19 @@ def check_portfolio_alerts(portfolio_name):
       }
     """
     try:
-        from db.firestore_client import _ensure_client
+        from db.firestore_client import _ensure_client, user_collection
+        from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
         client = _ensure_client()
-        doc = client.collection('alerts').document(portfolio_name).get()
+        try:
+            uid = get_request_user_id()
+        except TokenExpiredError as e:
+            return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+        except TokenInvalidError as e:
+            return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+        if uid:
+            doc = user_collection(client, uid, 'alerts').document(portfolio_name).get()
+        else:
+            doc = client.collection('alerts').document(portfolio_name).get()
         if not doc.exists:
             return jsonify({'triggered': [], 'evaluated_count': 0, 'timestamp': datetime.utcnow().isoformat() + 'Z'}), 200
         settings = doc.to_dict() or {}
@@ -668,6 +900,8 @@ def check_portfolio_alerts(portfolio_name):
         returns_cache = {}
         for tf_key, fn in timeframe_funcs.items():
             try:
+                # If core functions support uid propagation in the future, pass uid here; for now these functions
+                # operate on portfolio_name only. We still prefer to namespace cache keys by uid where possible.
                 returns_cache[tf_key] = fn(portfolio_name)
             except Exception:
                 current_app.logger.exception(f"Failed computing returns for timeframe {tf_key} (portfolio {portfolio_name})")
@@ -792,8 +1026,14 @@ def save_portfolio_targets_route(portfolio_name):
     if not isinstance(targets, dict):
         return jsonify({'error': 'Invalid targets payload'}), 400
     try:
-        from db.portfolios import save_portfolio_targets
-        save_portfolio_targets(portfolio_name, mode, targets)
+        from db.portfolios import save_portfolio_targets, save_portfolio_targets_user
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+        if uid:
+            save_portfolio_targets_user(uid, portfolio_name, mode, targets)
+        else:
+            save_portfolio_targets(portfolio_name, mode, targets)
         return jsonify({'status': 'saved', 'portfolio': portfolio_name}), 200
     except Exception as e:
         current_app.logger.exception('Failed to save portfolio targets')
@@ -809,16 +1049,20 @@ def portfolio_targets_options(portfolio_name):
 def portfolio_performance(portfolio_name):
     try:
         from core.portfolio import get_cached_portfolio_performance
-        cache_key = f"performance::{portfolio_name}"
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+        cache_key = f"performance::{uid + ':' if uid else ''}{portfolio_name}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
-        perf = get_cached_portfolio_performance(portfolio_name)
+        perf = get_cached_portfolio_performance(portfolio_name, uid=uid)
         # If performance computation returned empty, try to provide a minimal current snapshot
         if not perf or (isinstance(perf, list) and len(perf) == 0):
             try:
                 from core.portfolio import get_portfolio_status
-                status = get_portfolio_status(portfolio_name)
+                uid = get_request_user_id()
+                status = get_portfolio_status(portfolio_name, uid=uid)
                 total_value = status.get('total_value', 0)
                 perf = [{ 'date': datetime.utcnow().strftime('%Y-%m-%d'), 'value': total_value, 'abs_value': total_value, 'pct': 0.0, 'pct_from_first': 0.0 }]
             except Exception:
@@ -839,7 +1083,10 @@ def benchmark_performance(ticker):
         if cached is not None:
             return jsonify(cached)
 
-        perf = compute_benchmark_performance(ticker)
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+        perf = compute_benchmark_performance(ticker, uid=uid)
         if not perf or (isinstance(perf, list) and len(perf) == 0):
             return jsonify([])
         _set_intraday_cache(cache_key, perf)
@@ -872,18 +1119,71 @@ def benchmark_performance_query_options():
 def portfolio_ticker_performance(portfolio_name, ticker):
     try:
         from core.portfolio import compute_ticker_performance
-        cache_key = f"ticker_performance::{portfolio_name}::{ticker}"
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+        cache_key = f"ticker_performance::{uid + ':' if uid else ''}{portfolio_name}::{ticker}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
 
-        perf = compute_ticker_performance(portfolio_name, ticker)
+        perf = compute_ticker_performance(portfolio_name, ticker, uid=uid)
+        # If cached result is empty, force a recompute to rule out stale cache
         if not perf or (isinstance(perf, list) and len(perf) == 0):
+            try:
+                current_app.logger.info(f"[DIAG] cached perf empty for {portfolio_name}/{ticker}, forcing recompute")
+                perf_recomputed = compute_ticker_performance(portfolio_name, ticker, uid=uid, _skip_cache=True)
+                current_app.logger.info(f"[DIAG] recomputed perf length={len(perf_recomputed) if perf_recomputed else 0} for {portfolio_name}/{ticker}")
+                if perf_recomputed:
+                    _set_intraday_cache(cache_key, perf_recomputed)
+                    return jsonify(perf_recomputed)
+            except Exception:
+                current_app.logger.exception("[DIAG] recompute failed")
+            # Diagnostic logging: capture transactions and ticker history availability
+            try:
+                from core.portfolio import _get_transactions_for, _get_ticker_history_for
+                txs = _get_transactions_for(portfolio_name, uid=uid) or []
+                # match case-insensitive and strip
+                txs_for_ticker = [t for t in txs if any(((t.get(k) or '').strip().upper() == (ticker or '').upper()) for k in ('ticker', 'assetSymbol', 'asset_symbol', 'symbol'))]
+                hist = _get_ticker_history_for(ticker, uid=uid) or []
+                # log counts and small samples (max 3) to inspect shapes
+                sample_txs = txs_for_ticker[:3]
+                sample_hist = hist[:3]
+                current_app.logger.info(f"[DIAG] portfolio_ticker_performance empty for portfolio={portfolio_name} ticker={ticker} uid={uid} tx_count_total={len(txs)} tx_count_for_ticker={len(txs_for_ticker)} history_len={len(hist)} txs_sample={sample_txs} history_sample={sample_hist}")
+            except Exception:
+                current_app.logger.exception("[DIAG] failed to collect diagnostics for empty ticker performance")
             return jsonify([])
+        _set_intraday_cache(cache_key, perf)
+        return jsonify(perf)
         _set_intraday_cache(cache_key, perf)
         return jsonify(perf)
     except Exception as e:
         current_app.logger.exception(f"Error fetching ticker performance for {portfolio_name} ticker {ticker}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/debug/portfolio/<string:portfolio_name>/ticker/<path:ticker>/debug', methods=['GET'])
+def debug_portfolio_ticker(portfolio_name, ticker):
+    # Dev-only troubleshooting endpoint returning transaction/history samples and computed internals
+    try:
+        if os.environ.get('FLASK_ENV') != 'development':
+            return jsonify({'error': 'debug endpoint only available in development mode'}), 403
+        from core.portfolio import _get_transactions_for, _get_ticker_history_for, compute_ticker_performance
+        txs = _get_transactions_for(portfolio_name) or []
+        txs_for_ticker = [t for t in txs if any(((t.get(k) or '').strip().upper() == (ticker or '').upper()) for k in ('ticker', 'assetSymbol', 'asset_symbol', 'symbol'))]
+        hist = _get_ticker_history_for(ticker) or []
+        perf = compute_ticker_performance(portfolio_name, ticker, _skip_cache=True)
+        return jsonify({
+            'txs_count': len(txs),
+            'txs_for_ticker_count': len(txs_for_ticker),
+            'txs_sample': txs_for_ticker[:5],
+            'history_len': len(hist),
+            'history_sample': hist[:5],
+            'perf_len': len(perf) if perf else 0,
+            'perf_sample': perf[:5] if perf else []
+        })
+    except Exception as e:
+        current_app.logger.exception('debug_portfolio_ticker failed')
         return jsonify({'error': str(e)}), 500
 
 
@@ -910,13 +1210,19 @@ def portfolio_ticker_performance_query_options(portfolio_name):
 def portfolio_kpis(portfolio_name):
     try:
         from core.portfolio import get_portfolio_status
-        status = get_portfolio_status(portfolio_name)
-        
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+        status = get_portfolio_status(portfolio_name, uid=uid)
+
         # Extract KPIs from portfolio status
         total_value = status.get('total_value', 0)
         holdings_count = len(status.get('holdings', []))
-        
-        cache_key = f"kpis::{portfolio_name}"
+
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+        cache_key = f"kpis::{uid + ':' if uid else ''}{portfolio_name}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
@@ -926,8 +1232,8 @@ def portfolio_kpis(portfolio_name):
         net_pl = None
         cost_basis = None
         try:
-            from db.portfolios import get_transactions
-            txs = get_transactions(portfolio_name)
+            from db.portfolios import get_transactions, get_transactions_user
+            txs = get_transactions_user(uid, portfolio_name) if uid else get_transactions(portfolio_name)
             # cost basis: sum(quantity * price) for buy transactions (quantity > 0)
             cost_basis = 0.0
             for t in txs:
@@ -1027,19 +1333,22 @@ def portfolio_returns_kpis(portfolio_name):
             get_ytd_returns,
             get_one_year_return
         )
-        cache_key = f"returns::{portfolio_name}"
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+        cache_key = f"returns::{uid + ':' if uid else ''}{portfolio_name}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
 
         returns_kpis = {
-            'daily': get_last_day_possible_returns(portfolio_name),
-            'three_days': get_last_three_days_returns(portfolio_name),
-            'weekly': get_weekly_returns(portfolio_name),
-            'monthly': get_monthly_returns(portfolio_name),
-            'three_month': get_three_month_returns(portfolio_name),
-            'ytd': get_ytd_returns(portfolio_name),
-            'one_year': get_one_year_return(portfolio_name)
+            'daily': get_last_day_possible_returns(portfolio_name, uid=uid),
+            'three_days': get_last_three_days_returns(portfolio_name, uid=uid),
+            'weekly': get_weekly_returns(portfolio_name, uid=uid),
+            'monthly': get_monthly_returns(portfolio_name, uid=uid),
+            'three_month': get_three_month_returns(portfolio_name, uid=uid),
+            'ytd': get_ytd_returns(portfolio_name, uid=uid),
+            'one_year': get_one_year_return(portfolio_name, uid=uid)
         }
 
         # Post-process each period to ensure portfolio-level end_value and return_pct
@@ -1125,14 +1434,15 @@ def portfolio_allocation(portfolio_name):
         grouping = request.args.get('grouping', 'overall')
         
         # Support additional grouping modes: 'category', 'risk', 'category_risk'
+        uid = get_request_user_id()
         if grouping == 'overall':
             from core.portfolio import get_overall_asset_allocation
-            allocation_data = get_overall_asset_allocation(portfolio_name)
+            allocation_data = get_overall_asset_allocation(portfolio_name, uid=uid)
         # quoteType grouping removed; use asset_type (assetType) endpoint instead
         elif grouping in ('category', 'risk', 'category_risk'):
             # Uses saved holdings metadata (portfolio_holdings) when available
             from core.portfolio import get_asset_allocation_by_category_and_risk
-            full = get_asset_allocation_by_category_and_risk(portfolio_name)
+            full = get_asset_allocation_by_category_and_risk(portfolio_name, uid=uid)
             # Return a subset depending on requested grouping
             if grouping == 'category':
                 allocation_data = full.get('by_category', {})
@@ -1143,12 +1453,12 @@ def portfolio_allocation(portfolio_name):
         elif grouping in ('assetType', 'asset_type'):
             # Group by holdings' asset_type field (uses saved portfolio_holdings metadata)
             from core.portfolio import get_asset_allocation_by_asset_type
-            full = get_asset_allocation_by_asset_type(portfolio_name)
+            full = get_asset_allocation_by_asset_type(portfolio_name, uid=uid)
             allocation_data = full.get('by_asset_type', {})
         else:
             return jsonify({'error': 'Invalid grouping parameter. Use "overall", "category", "risk", "category_risk" or "asset_type"'}), 400
         
-        cache_key = f"allocation::{portfolio_name}::grouping={grouping}"
+        cache_key = f"allocation::{uid + ':' if uid else ''}{portfolio_name}::grouping={grouping}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
@@ -1220,14 +1530,21 @@ def portfolio_volatility(portfolio_name):
 
         # Include the series flag in the cache key so scalar and series
         # payloads are cached separately and don't get mixed.
-        cache_key = f"volatility::{portfolio_name}::method={method}::window={cache_window_key}::series={'1' if series_flag else '0'}"
+        uid = get_request_user_id()
+        cache_key = f"volatility::{uid + ':' if uid else ''}{portfolio_name}::method={method}::window={cache_window_key}::series={'1' if series_flag else '0'}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
+
         if series_flag:
             # compute time-series (pd.Series) and convert to list of {date, volatility}
             try:
-                vol_series = compute_portfolio_volatility_1d(portfolio_name, window=window_value or DEFAULT_VOLATILITY_WINDOW, method=method)
+                vol_series = compute_portfolio_volatility_1d(
+                    portfolio_name,
+                    window=window_value or DEFAULT_VOLATILITY_WINDOW,
+                    method=method,
+                    uid=uid,
+                )
                 # Convert to list of points; handle empty series
                 points = []
                 if vol_series is not None:
@@ -1244,7 +1561,7 @@ def portfolio_volatility(portfolio_name):
                                 # Lazily compute performance dates mapping
                                 if perf_dates is None:
                                     try:
-                                        perf = compute_portfolio_performance(portfolio_name)
+                                        perf = compute_portfolio_performance(portfolio_name, uid=uid)
                                         perf_dates = [p.get('date') for p in perf]
                                     except Exception:
                                         perf_dates = None
@@ -1270,12 +1587,13 @@ def portfolio_volatility(portfolio_name):
                 current_app.logger.exception('Failed to compute volatility series')
                 return jsonify({'error': str(e)}), 500
         else:
-            volatility = compute_portfolio_volatility(portfolio_name, window=window_value, method=method)
+            volatility = compute_portfolio_volatility(portfolio_name, window=window_value, method=method, uid=uid)
             payload = {
                 'volatility': volatility if (volatility is not None and not math.isnan(volatility)) else None,
                 'window': None if window_value is None else window_value,
-                'method': method
+                'method': method,
             }
+
         _set_intraday_cache(cache_key, payload)
         return jsonify(payload)
     except Exception as e:
@@ -1310,13 +1628,22 @@ def portfolio_volatility_options(portfolio_name):
 @require_google_token()
 def delete_single_transaction(portfolio_name, transaction_id):
     try:
-        from db.portfolios import delete_transaction, get_transaction_by_id
-        existing = get_transaction_by_id(transaction_id)
-        if not existing:
-            return jsonify({'error': 'Transaction not found'}), 404
-        if existing.get('portfolio') != portfolio_name:
-            return jsonify({'error': 'Portfolio mismatch'}), 400
-        delete_transaction(portfolio_name, transaction_id)
+        from db.portfolios import delete_transaction, get_transaction_by_id, delete_transaction_user, get_transaction_by_id_user
+        uid = get_request_user_id()
+        if uid:
+            existing = get_transaction_by_id_user(uid, transaction_id)
+            if not existing:
+                return jsonify({'error': 'Transaction not found'}), 404
+            if existing.get('portfolio') != portfolio_name:
+                return jsonify({'error': 'Portfolio mismatch'}), 400
+            delete_transaction_user(uid, portfolio_name, transaction_id)
+        else:
+            existing = get_transaction_by_id(transaction_id)
+            if not existing:
+                return jsonify({'error': 'Transaction not found'}), 404
+            if existing.get('portfolio') != portfolio_name:
+                return jsonify({'error': 'Portfolio mismatch'}), 400
+            delete_transaction(portfolio_name, transaction_id)
         return jsonify({'status': 'deleted', 'id': transaction_id})
     except Exception as e:
         current_app.logger.exception('Failed to delete transaction')
@@ -1327,17 +1654,26 @@ def delete_single_transaction(portfolio_name, transaction_id):
 @require_google_token()
 def update_single_transaction(portfolio_name, transaction_id):
     try:
-        from db.portfolios import update_transaction, get_transaction_by_id
+        from db.portfolios import update_transaction, get_transaction_by_id, update_transaction_user, get_transaction_by_id_user
         try:
             data = safe_get_json(request)
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
-        existing = get_transaction_by_id(transaction_id)
-        if not existing:
-            return jsonify({'error': 'Transaction not found'}), 404
-        if existing.get('portfolio') != portfolio_name:
-            return jsonify({'error': 'Portfolio mismatch'}), 400
-        updated = update_transaction(portfolio_name, transaction_id, data or {})
+        uid = get_request_user_id()
+        if uid:
+            existing = get_transaction_by_id_user(uid, transaction_id)
+            if not existing:
+                return jsonify({'error': 'Transaction not found'}), 404
+            if existing.get('portfolio') != portfolio_name:
+                return jsonify({'error': 'Portfolio mismatch'}), 400
+            updated = update_transaction_user(uid, portfolio_name, transaction_id, data or {})
+        else:
+            existing = get_transaction_by_id(transaction_id)
+            if not existing:
+                return jsonify({'error': 'Transaction not found'}), 404
+            if existing.get('portfolio') != portfolio_name:
+                return jsonify({'error': 'Portfolio mismatch'}), 400
+            updated = update_transaction(portfolio_name, transaction_id, data or {})
         if updated is None:
             return jsonify({'error': 'Transaction not found'}), 404
         return jsonify({'status': 'updated', 'transaction': updated})
@@ -1356,8 +1692,12 @@ def transaction_item_options(portfolio_name, transaction_id):  # CORS preflight
 @require_google_token()
 def delete_portfolio_route(portfolio_name):
     try:
-        from db.portfolios import delete_portfolio
-        delete_portfolio(portfolio_name)
+        from db.portfolios import delete_portfolio, delete_portfolio_user
+        uid = get_request_user_id()
+        if uid:
+            delete_portfolio_user(uid, portfolio_name)
+        else:
+            delete_portfolio(portfolio_name)
         return jsonify({'status': 'deleted', 'portfolio': portfolio_name}), 200
     except Exception as e:
         current_app.logger.exception(f'Failed to delete portfolio {portfolio_name}')

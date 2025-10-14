@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import * as React from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchPortfolioKpis } from '../services/portfolioService';
 import { useAuth } from '../AuthContext';
@@ -12,6 +13,7 @@ import PageShell from '../components/PageShell';
 // no historical types needed in this page
 
 import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
+import { apiFetch } from '../utils/apiFetch';
 
 // -----------------------------------------------------
 // Page: Asset Analysis
@@ -33,10 +35,7 @@ const AssetAnalysisPage: React.FC = () => {
       }
       try {
         const base = cleanApiBaseUrl(API_BASE_URL);
-        const res = await fetch(`${base}/api/portfolio/${selectedPortfolio}/tickers`, {
-          headers: idToken ? { Authorization: `Bearer ${idToken}` } : {}
-        });
-        const json = await res.json();
+        const { data: json } = await apiFetch<any>(`${base}/api/portfolio/${selectedPortfolio}/tickers`, { idToken });
         let tickersList: string[] = [];
         if (Array.isArray(json)) tickersList = json;
         else if (json && Array.isArray(json.tickers)) tickersList = json.tickers;
@@ -53,7 +52,7 @@ const AssetAnalysisPage: React.FC = () => {
   // No sentinel; rely on null and optional auto-select in PageShell
 
   // availableTickers for TickerPerformanceSection
-  const availableTickers = tickersList.map(symbol => ({ id: symbol, name: symbol }));
+  const availableTickers = tickersList.map((symbol: string) => ({ id: symbol, name: symbol }));
 
   // Fetch portfolio KPIs so we can replicate SimpleHome's default selected ticker behavior
   const { data: kpis } = useQuery({
@@ -66,7 +65,7 @@ const AssetAnalysisPage: React.FC = () => {
   useEffect(() => {
     if (kpis?.net_performance_tickers?.length > 0 && selectedTickers.length === 0 && availableTickers.length > 0) {
       const bestPerformer = kpis.net_performance_tickers[0];
-      if (bestPerformer && availableTickers.some(t => t.id === bestPerformer.ticker)) {
+      if (bestPerformer && availableTickers.some((t: { id: string; name: string }) => t.id === bestPerformer.ticker)) {
         setSelectedTickers([bestPerformer.ticker]);
       }
     }

@@ -1,5 +1,6 @@
 import { TickerSearchResultItem } from './marketDataService';
 import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
+import { apiFetch } from '../utils/apiFetch';
 
 export interface GeminiSearchResponse {
   query: string;
@@ -23,17 +24,9 @@ export const geminiSearch = async (
   if (typeof opts?.grounding === 'boolean') params.set('grounding', opts.grounding ? 'true' : 'false');
 
   const url = `${base}/api/tickers/search?${params.toString()}`;
-  try {
-    const res = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
-    if (!res.ok) {
-      const txt = await res.text();
-      return { query: q, count: 0, results: [], error: `HTTP ${res.status}: ${txt}` };
-    }
-    const json = await res.json();
-    return json as GeminiSearchResponse;
-  } catch (e: any) {
-    return { query: q, count: 0, results: [], error: e?.message || 'network error' };
-  }
+  const { ok, data, error } = await apiFetch<GeminiSearchResponse>(url, { method: 'GET' });
+  if (!ok || !data) return { query: q, count: 0, results: [], error: error || 'request failed' };
+  return data as GeminiSearchResponse;
 };
 
 export default { geminiSearch };

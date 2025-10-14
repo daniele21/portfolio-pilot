@@ -34,6 +34,25 @@ COL_PORTFOLIO_REPORTS = "portfolio_report"
 COL_TICKER_REPORTS = "ticker_reports"
 COL_PORTFOLIO_SUMUP = "portfolio_sumup"
 
+# Root collection for user-scoped (tenant) data. All collections except the
+# shared market data (ticker_info, ticker_history) will move under:
+#   users/{uid}/<collection>
+# during the multi-tenant refactor. We keep existing top-level collection
+# names for backward compatibility / migration period.
+COL_USERS_ROOT = "users"
+
+def user_collection(client, uid: str, collection: str):
+    """Return a CollectionReference for a user-scoped collection.
+
+    Usage:
+        col = user_collection(client, user_id, COL_PORTFOLIOS)
+        col.document(<id>).set({...})
+
+    This helper centralizes the path structure so future changes (e.g. adding a
+    version prefix) only require editing here.
+    """
+    return client.collection(COL_USERS_ROOT).document(uid).collection(collection)
+
 
 def _ensure_client():
     """Return an initialized Firestore client or raise if the SDK is missing."""

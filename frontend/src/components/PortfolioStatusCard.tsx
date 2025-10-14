@@ -1,8 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { fetchPortfolioStatusLive } from '../services/portfolioService';
+// Use react-query hook to avoid repeated manual fetch loops
+import { usePortfolioStatusLive } from '../services/transactionsApi';
 import { PortfolioStatusResponse } from '../types';
 import { idbGet, idbSet } from '../utils/idbCache';
 import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
+import { apiFetch } from '../utils/apiFetch';
 import { useCallback } from 'react';
 import { ArrowUpIcon, ArrowDownIcon, CheckIcon, InformationCircleIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 
@@ -100,14 +102,8 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
       if (idToken) {
         try {
           const base = cleanApiBaseUrl(API_BASE_URL);
-          const resp = await fetch(`${base}/api/portfolio/${portfolioName}/status/metadata`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-            body: JSON.stringify({ metadata: meta })
-          });
-          if (!resp.ok) {
-            console.warn('Server rejected metadata save, falling back to local cache');
-          }
+          const { ok } = await apiFetch(`${base}/api/portfolio/${portfolioName}/status/metadata`, { method: 'POST', idToken, body: JSON.stringify({ metadata: meta }) });
+          if (!ok) console.warn('Server rejected metadata save, falling back to local cache');
         } catch (e) {
           console.warn('Failed to POST metadata to server, saving locally instead');
         }
@@ -122,30 +118,30 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
 
   // handleResetMeta intentionally removed; Reset button is commented out
 
+  // React Query live status
+  const { data: liveStatus, isFetching: statusFetching, error: statusError } = usePortfolioStatusLive(portfolioName, getAuthIdToken(), { enabled: !!portfolioName });
+
+  // Sync into local state without changing rest of component logic
   useEffect(() => {
-    // Always fetch live-computed status so the UI reflects current transactions.
-    if (!portfolioName) return;
-    setLoading(true);
-    setError(null);
-    fetchPortfolioStatusLive(portfolioName)
-      .then((data) => {
-        setStatus(data);
-        setError(null);
-        // Notify parent with holdings data for ticker selection
-        if (onHoldingsLoaded && data?.holdings) {
-          const holdingsForTickers = data.holdings.map(h => ({
-            ticker: h.ticker,
-            name: h.ticker // We could potentially enhance this with ticker names if available
-          }));
-          onHoldingsLoaded(holdingsForTickers);
-        }
-      })
-      .catch(() => {
-        setStatus(null);
-        setError('Failed to fetch portfolio status.');
-      })
-      .finally(() => setLoading(false));
-  }, [portfolioName]);
+    if (statusFetching) setLoading(true);
+    if (!statusFetching) setLoading(false);
+  }, [statusFetching]);
+
+  useEffect(() => {
+    if (statusError) {
+      setError(statusError instanceof Error ? statusError.message : 'Failed to fetch portfolio status.');
+      setStatus(null);
+    } else if (liveStatus) {
+      // Some API variants return { status: { holdings: [...] } }
+      const resolved = (liveStatus as any) && (liveStatus as any).status ? (liveStatus as any).status : liveStatus;
+      setStatus(resolved as any);
+      setError(null);
+      if (onHoldingsLoaded && resolved?.holdings) {
+        const holdingsForTickers = resolved.holdings.map((h: any) => ({ ticker: h.ticker, name: h.name || h.ticker }));
+        onHoldingsLoaded(holdingsForTickers);
+      }
+    }
+  }, [liveStatus, statusError, onHoldingsLoaded]);
 
   const requestSort = (key: string) => {
     let direction: 'asc' | 'desc' = 'asc';

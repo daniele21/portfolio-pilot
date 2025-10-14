@@ -27,7 +27,13 @@ export const SelectedPortfolioProvider: React.FC<{ children: React.ReactNode }> 
   }, [selectedPortfolio]);
 
   const setSelectedPortfolio = useCallback((name: string | null) => {
-    setSelectedPortfolioState(name);
+    // Avoid updating state if the value is the same (prevents unnecessary effects and network refetches)
+    setSelectedPortfolioState(prev => {
+      const prevVal = prev == null ? null : String(prev);
+      const nextVal = name == null ? null : String(name);
+      if (prevVal === nextVal) return prev; // no change
+      return nextVal;
+    });
   }, []);
 
   const clearSelectedPortfolio = useCallback(() => {

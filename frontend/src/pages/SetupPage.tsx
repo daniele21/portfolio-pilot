@@ -1,7 +1,10 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import * as React from 'react';
+import { useEffect, useState, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { apiFetch } from '../utils/apiFetch';
 import type { StandardizedMovement } from '../types';
 import { getAppliedMovementsLog, isUsingCustomData as checkIsCustomData, fetchTickerName, fetchAllPortfolioNames, ingestTransactions, savePortfolioStatus } from '../services/portfolioService';
-import { fetchPortfolioTransactions } from '../services/transactionsApi';
+import { usePortfolioTransactions } from '../services/transactionsApi';
 import { ArrowUpIcon, ArrowDownIcon, PlusIcon, CloudArrowUpIcon, ChartBarIcon, BellIcon } from '@heroicons/react/24/outline';
 import { useAuth } from '../AuthContext';
 import { useSelectedPortfolio } from '../SelectedPortfolioContext';
@@ -39,6 +42,7 @@ const TransactionsPage: React.FC = React.memo(() => {
   const [sortConfig, setSortConfig] = useState<{ key: SortableKeys; direction: 'ascending' | 'descending' } | null>(null);
   const [tickerNames, setTickerNames] = useState<Record<string, string>>({});
   const { isLoggedIn, idToken } = useAuth();
+  const queryClient = useQueryClient();
   const [importing, setImporting] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [importText, setImportText] = useState('');
@@ -47,7 +51,7 @@ const TransactionsPage: React.FC = React.memo(() => {
   const [pendingDeletes, setPendingDeletes] = useState<{ id: any, portfolio: any }[]>([]);
   const [allPortfolioNames, setAllPortfolioNames] = useState<string[]>([]);
   // Use global selected portfolio
-  const { selectedPortfolio, setSelectedPortfolio } = useSelectedPortfolio();
+  const { selectedPortfolio, setSelectedPortfolio, clearSelectedPortfolio } = useSelectedPortfolio();
   const [modalMode, setModalMode] = useState<'import' | 'add'>('import');
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   // Add a state to trigger PortfolioStatusCard refresh
@@ -153,20 +157,10 @@ const TransactionsPage: React.FC = React.memo(() => {
           // Fetch all portfolio names from backend
           const names = await fetchAllPortfolioNames();
           setAllPortfolioNames(names);
-          // Load transactions for the first available portfolio
+          // Set selection to first portfolio; transactions will be loaded by the selectedPortfolio effect.
           const firstPortfolio = names[0];
           if (firstPortfolio) {
-            try {
-              const txs = await fetchPortfolioTransactions(firstPortfolio, idToken);
-              setMovements(txs);
-              setSelectedPortfolio(firstPortfolio);
-              setError(null);
-              console.log('API loaded transactions:', txs);
-              if (txs.length > 0) console.log('[DEBUG] First transaction object:', txs[0]);
-            } catch (e: any) {
-              setMovements([]);
-              setError(e?.message || 'Failed to load transactions from backend.');
-            }
+            setSelectedPortfolio(firstPortfolio);
           } else {
             setMovements([]);
             setSelectedPortfolio('');
@@ -255,7 +249,7 @@ const TransactionsPage: React.FC = React.memo(() => {
     }
     
     // Debounce this effect to prevent rapid-fire calls during UI changes
-    portfolioEffectTimeoutRef.current = setTimeout(() => {
+  portfolioEffectTimeoutRef.current = setTimeout(() => {
       // Only run this effect if portfolioNames actually changed (not just re-renders)
       const portfolioNamesChanged = JSON.stringify(portfolioNames) !== JSON.stringify(lastPortfolioNamesRef.current);
       lastPortfolioNamesRef.current = portfolioNames;
@@ -267,11 +261,7 @@ const TransactionsPage: React.FC = React.memo(() => {
       if (portfolioNames.length > 0 && !portfolioNames.includes(selectedPortfolio)) {
         const newPortfolio = portfolioNames[0];
         setSelectedPortfolio(newPortfolio);
-        // Only auto-load if we haven't already loaded this portfolio
-        if (autoLoadedRef.current !== newPortfolio) {
-          autoLoadedRef.current = newPortfolio;
-          handleLoadTransactions(newPortfolio);
-        }
+        // selectedPortfolio effect will trigger loading; no direct call here to avoid duplicates
       }
       // If there are no portfolios, clear selection
       if (portfolioNames.length === 0 && selectedPortfolio !== '') {
@@ -287,45 +277,22 @@ const TransactionsPage: React.FC = React.memo(() => {
     };
   }, [portfolioNames, selectedPortfolio]);
 
-  // Update handleLoadTransactions to never fallback to 'Imported'
-  const handleLoadTransactions = useCallback(async (portfolioOverride?: string) => {
-    setError(null);
-    try {
-      const portfolioToLoad = portfolioOverride || selectedPortfolio || (portfolioNames.length > 0 ? portfolioNames[0] : '');
-      console.log('[DEBUG] handleLoadTransactions called');
-      console.log('[DEBUG] portfolioOverride:', portfolioOverride);
-      console.log('[DEBUG] selectedPortfolio:', selectedPortfolio);
-      console.log('[DEBUG] portfolioNames:', portfolioNames);
-      if (!portfolioToLoad) {
-        setMovements([]);
-        setError('No portfolio selected.');
-        return;
-      }
-      console.log('[DEBUG] Fetching transactions for portfolio (via service):', portfolioToLoad);
-      try {
-        const txs = await fetchPortfolioTransactions(portfolioToLoad, idToken);
-        setMovements(txs);
-        setSelectedPortfolio(portfolioToLoad);
-        setError(null);
-        console.log('[DEBUG] API loaded transactions via service:', txs);
-        if (txs.length > 0) console.log('[DEBUG] First transaction object:', txs[0]);
-      } catch (e:any) {
-        setMovements([]);
-        setError(e?.message || 'Failed to load transactions from backend.');
-      }
-    } catch (err) {
-      setMovements([]);
-      setError('Failed to load transactions from backend.');
-      console.error('[DEBUG] Fetch error:', err);
-    }
-  }, [idToken, portfolioNames, selectedPortfolio, setSelectedPortfolio]);
+  // React Query based transactions fetch (prevents continuous manual triggering)
+  const { data: rqTransactions, error: rqTxError } = usePortfolioTransactions(selectedPortfolio, idToken, { enabled: !!selectedPortfolio && !!isLoggedIn });
 
-  // When the selected portfolio changes in context, ensure transactions are loaded for it
+  // Synchronize query data into existing local state used for sorting & filters
   useEffect(() => {
-    if (!selectedPortfolio) return;
-    // Load transactions for the newly selected portfolio
-    handleLoadTransactions(selectedPortfolio);
-  }, [selectedPortfolio, handleLoadTransactions]);
+    if (Array.isArray(rqTransactions)) {
+      setMovements(rqTransactions as StandardizedMovement[]);
+      if (rqTxError == null) setError(null);
+    }
+  }, [rqTransactions, rqTxError]);
+
+  useEffect(() => {
+    if (rqTxError) {
+      setError(rqTxError instanceof Error ? rqTxError.message : 'Failed to load transactions');
+    }
+  }, [rqTxError]);
 
   const handleImportClick = () => {
     setModalMode('import');
@@ -354,7 +321,7 @@ const TransactionsPage: React.FC = React.memo(() => {
         setImportText('');
         setUploadFiles([]);
         setImportPortfolioName('');
-        handleLoadTransactions(resp.portfolio || importPortfolioName);
+  try { queryClient.invalidateQueries({ queryKey: ['transactions', resp.portfolio || importPortfolioName, true] }); } catch {}
         fetchAllPortfolioNames().then(setAllPortfolioNames);
         // progress messages removed (no longer tracked in component state)
       }, 800);
@@ -454,28 +421,17 @@ const TransactionsPage: React.FC = React.memo(() => {
     setError(null);
     try {
       const base = cleanApiBaseUrl(API_BASE_URL);
-      const response = await fetch(`${base}/api/portfolio/${portfolio}/transaction/${id}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${idToken}` }
-      });
-      const data = await response.json();
-      if (!(response.ok && data.status === 'deleted')) {
-        setError(data.error || 'Failed to delete transaction.');
-        return;
-      }
+      const { ok, data } = await apiFetch<any>(`${base}/api/portfolio/${portfolio}/transaction/${id}`, { method: 'DELETE', idToken });
+      if (!(ok && data && data.status === 'deleted')) { setError(data?.error || 'Failed to delete transaction.'); return; }
       // Refresh transactions from backend
-      await handleLoadTransactions(portfolio);
+  try { queryClient.invalidateQueries({ queryKey: ['transactions', portfolio, true] }); } catch {}
 
       // Post any locally cached metadata before saving status
       try {
         const metaKey = `status_meta:${portfolio}`;
         const localMeta = await idbGet(metaKey);
         if (localMeta && idToken) {
-          await fetch(`${base}/api/portfolio/${portfolio}/status/metadata`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-            body: JSON.stringify({ metadata: localMeta })
-          });
+          await apiFetch(`${base}/api/portfolio/${portfolio}/status/metadata`, { method: 'POST', idToken, body: JSON.stringify({ metadata: localMeta }) });
         }
       } catch (metaErr) {
         console.warn('Failed to POST local metadata before status save after delete:', metaErr);
@@ -519,25 +475,16 @@ const TransactionsPage: React.FC = React.memo(() => {
     setError(null);
     try {
       const base = cleanApiBaseUrl(API_BASE_URL);
-      const resp = await fetch(`${base}/api/portfolio/${portfolio}/transaction/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-        body: JSON.stringify(updated)
-      });
-      const data = await resp.json();
-      if (resp.ok) {
+      const { ok, data } = await apiFetch<any>(`${base}/api/portfolio/${portfolio}/transaction/${id}`, { method: 'PUT', idToken, body: JSON.stringify(updated) });
+      if (ok) {
         // Refresh transactions after successful edit
-        await handleLoadTransactions(portfolio);
+  try { queryClient.invalidateQueries({ queryKey: ['transactions', portfolio, true] }); } catch {}
         // Also post any locally cached holding metadata and ask server to save status
         try {
           const metaKey = `status_meta:${portfolio}`;
           const localMeta = await idbGet(metaKey);
           if (localMeta && idToken) {
-            await fetch(`${base}/api/portfolio/${portfolio}/status/metadata`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-              body: JSON.stringify({ metadata: localMeta })
-            });
+            await apiFetch(`${base}/api/portfolio/${portfolio}/status/metadata`, { method: 'POST', idToken, body: JSON.stringify({ metadata: localMeta }) });
           }
         } catch (metaErr) {
           console.warn('Failed to POST local metadata after edit save:', metaErr);
@@ -755,20 +702,34 @@ const TransactionsPage: React.FC = React.memo(() => {
               setDeleteError(null);
               try {
                 const base = cleanApiBaseUrl(API_BASE_URL);
-                const resp = await fetch(`${base}/api/portfolio/${selectedPortfolio}`, {
-                  method: 'DELETE',
-                  headers: { 'Authorization': `Bearer ${idToken}` }
-                });
-                const data = await resp.json();
-                if (resp.ok && data.status === 'deleted') {
+                const { ok, data } = await apiFetch<any>(`${base}/api/portfolio/${selectedPortfolio}`, { method: 'DELETE', idToken });
+                if (ok && data && data.status === 'deleted') {
                   const updatedNames = portfolioNames.filter(name => name !== selectedPortfolio);
-                  setSelectedPortfolio(updatedNames[0] || '');
-                  fetchAllPortfolioNames().then(setAllPortfolioNames);
+                  if (updatedNames[0]) {
+                    setSelectedPortfolio(updatedNames[0]);
+                  } else {
+                    // No portfolios left: clear selection so localStorage doesn't keep a deleted name
+                    try {
+                      clearSelectedPortfolio();
+                    } catch (e) {
+                      // Fallback
+                      setSelectedPortfolio(null);
+                    }
+                  }
+                  // Invalidate react-query cache for header portfolio names so dropdowns refresh
+                  try {
+                    queryClient.invalidateQueries({ queryKey: ['headerPortfolioNames'] });
+                    // Also clear any local cached portfolio_names in IndexedDB used by service
+                    idbSet && idbSet('portfolio_names', updatedNames).catch(() => {});
+                  } catch (e) {
+                    // Fallback: directly refresh via service
+                    fetchAllPortfolioNames().then(setAllPortfolioNames);
+                  }
                   setMovements([]);
                   setError(null);
                   setShowDeleteModal(false);
                 } else {
-                  setDeleteError(data.error || 'Failed to delete portfolio.');
+                  setDeleteError(data?.error || 'Failed to delete portfolio.');
                 }
               } catch (err) {
                 setDeleteError('Failed to delete portfolio.');

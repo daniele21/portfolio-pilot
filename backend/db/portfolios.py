@@ -5,7 +5,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 import os
 import json
-from .firestore_client import _ensure_client, COL_PORTFOLIOS, COL_TRANSACTIONS, COL_PORTFOLIO_STATUS, COL_PORTFOLIO_HOLDINGS, COL_TICKERS, firestore, LOG_FIRESTORE
+from .firestore_client import (
+    _ensure_client,
+    COL_PORTFOLIOS,
+    COL_TRANSACTIONS,
+    COL_PORTFOLIO_STATUS,
+    COL_PORTFOLIO_HOLDINGS,
+    COL_TICKERS,
+    firestore,
+    LOG_FIRESTORE,
+    user_collection,
+)
 from google.cloud.firestore_v1 import FieldFilter
 
 
@@ -111,6 +121,16 @@ def get_transaction_by_id(transaction_id: str) -> Optional[Dict[str, Any]]:
     if LOG_FIRESTORE:
         print(f"[firestore][read] {COL_TRANSACTIONS}/{transaction_id}")
     doc = client.collection(COL_TRANSACTIONS).document(transaction_id).get()
+    if not doc.exists:
+        return None
+    r = doc.to_dict() or {}
+    r["id"] = doc.id
+    return r
+
+
+def get_transaction_by_id_user(uid: str, transaction_id: str) -> Optional[Dict[str, Any]]:
+    client = _ensure_client()
+    doc = user_collection(client, uid, COL_TRANSACTIONS).document(transaction_id).get()
     if not doc.exists:
         return None
     r = doc.to_dict() or {}
@@ -286,6 +306,59 @@ def get_portfolio_status_saved(portfolio: str) -> Tuple[Dict[str, Any], Optional
     if holdings_doc.exists:
         hd = holdings_doc.to_dict() or {}
         holdings = hd.get('holdings', [])
+    # Compute live holdings to detect drift between stored holdings and computed values
+    try:
+        from core.portfolio import get_portfolio_status
+        live_status = get_portfolio_status(portfolio)
+        live_holdings = live_status.get('holdings', []) if isinstance(live_status, dict) else []
+        # Build maps by ticker for comparison
+        stored_map = { h.get('ticker'): h for h in (holdings or []) if h.get('ticker') }
+        live_map = { h.get('ticker'): h for h in (live_holdings or []) if h.get('ticker') }
+        # Determine if any ticker is missing or any core fields differ
+        def differs(stored_h, live_h):
+            if not stored_h or not live_h:
+                return True
+            # Compare name and numeric fields; allow exact comparison for now
+            if (stored_h.get('name') or None) != (live_h.get('name') or None):
+                return True
+            for key in ('quantity', 'price', 'value'):
+                try:
+                    s = float(stored_h.get(key, 0) or 0)
+                    l = float(live_h.get(key, 0) or 0)
+                except Exception:
+                    return True
+                if s != l:
+                    return True
+            return False
+
+        need_save = False
+        # If any live ticker is new or differs from stored, mark for save
+        for tk, lh in live_map.items():
+            sh = stored_map.get(tk)
+            if differs(sh, lh):
+                need_save = True
+                break
+        # Also if stored contains tickers that live doesn't (stale holdings), save
+        if not need_save:
+            for tk in stored_map.keys():
+                if tk not in live_map:
+                    need_save = True
+                    break
+
+        if need_save:
+            try:
+                # Use save_portfolio_status which will merge existing per-holding metadata
+                from db.portfolios import save_portfolio_status
+                save_portfolio_status(portfolio, { 'total_value': live_status.get('total_value', 0), 'holdings': live_holdings })
+                # Return the live status so callers get up-to-date values
+                return { 'total_value': live_status.get('total_value', 0), 'holdings': live_holdings }, last_updated, updated_at
+            except Exception:
+                # If save fails, fall back to returning stored data
+                pass
+    except Exception:
+        # If live computation fails, ignore and return stored data
+        pass
+
     return {"total_value": data.get("total_value", 0), "holdings": holdings}, last_updated, updated_at
 
 
@@ -303,8 +376,10 @@ def save_holdings_metadata(portfolio: str, metadata_map: Dict[str, Dict[str, Any
     existing_holdings = []
     if doc.exists:
         existing_holdings = doc.to_dict().get('holdings', []) or []
-    # If we don't have existing holdings data for some tickers we will attempt
-    # to compute live holdings (name/quantity/price/value) from portfolio status
+    # Build a map by ticker to merge (copy to avoid mutating original list entries accidentally)
+    holdings_by_ticker: Dict[str, Dict[str, Any]] = { h.get('ticker'): dict(h) for h in existing_holdings if h.get('ticker') }
+
+    # Attempt to compute live holdings for enrichment where we are missing core fields
     live_holdings_map: Dict[str, Dict[str, Any]] = {}
     try:
         from core.portfolio import get_portfolio_status
@@ -319,63 +394,57 @@ def save_holdings_metadata(portfolio: str, metadata_map: Dict[str, Dict[str, Any
                     'value': float(h.get('value', 0) or 0),
                 }
     except Exception:
-        # If live computation fails, we silently continue and create placeholders
         live_holdings_map = {}
-    # Build a map by ticker to merge
-    holdings_by_ticker: Dict[str, Dict[str, Any]] = { h.get('ticker'): dict(h) for h in existing_holdings if h.get('ticker') }
-    # Merge metadata into existing holdings or create new entries
+
+    # Merge metadata into existing holdings or create new entries.
+    # When filling numeric/name fields, only populate if missing/empty/zero so we never overwrite good data.
     for ticker, meta in metadata_map.items():
-        if ticker in holdings_by_ticker:
-            entry = holdings_by_ticker[ticker]
-            if 'risk' in meta:
-                entry['risk'] = meta.get('risk')
-            if 'category' in meta:
-                entry['category'] = meta.get('category')
-            if 'assetType' in meta:
-                entry['asset_type'] = meta.get('assetType')
-            # Ensure standard holding fields exist: if existing doc only contained
-            # metadata (risk/category/asset_type) try to enrich with live-computed
-            # values so consumers see ticker/name/quantity/price/value as well.
-            live = live_holdings_map.get(ticker)
-            if live:
-                # Only fill missing or falsy fields so we don't overwrite user data
-                if not entry.get('name') and live.get('name') is not None:
-                    entry['name'] = live.get('name')
-                if ('quantity' not in entry or entry.get('quantity') in (None, 0)) and live.get('quantity') is not None:
-                    try:
-                        entry['quantity'] = float(live.get('quantity', 0))
-                    except Exception:
-                        entry['quantity'] = 0.0
-                if ('price' not in entry or entry.get('price') in (None, 0)) and live.get('price') is not None:
-                    try:
-                        entry['price'] = float(live.get('price', 0))
-                    except Exception:
-                        entry['price'] = 0.0
-                if ('value' not in entry or entry.get('value') in (None, 0)) and live.get('value') is not None:
-                    try:
-                        entry['value'] = float(live.get('value', 0))
-                    except Exception:
-                        entry['value'] = 0.0
-        else:
-            # create new entry: prefer live computed holding details when available
+        if not ticker:
+            continue
+        entry = holdings_by_ticker.get(ticker)
+        if entry is None:
+            # create new entry using live values when available, fallback to minimal placeholders
             if ticker in live_holdings_map:
-                new_entry = dict(live_holdings_map.get(ticker))
+                entry = dict(live_holdings_map[ticker])
             else:
-                new_entry = {
+                entry = {
                     'ticker': ticker,
                     'name': None,
                     'quantity': 0.0,
                     'price': 0.0,
                     'value': 0.0,
                 }
-            if 'risk' in meta:
-                new_entry['risk'] = meta.get('risk')
-            if 'category' in meta:
-                new_entry['category'] = meta.get('category')
-            if 'assetType' in meta:
-                new_entry['asset_type'] = meta.get('assetType')
-            holdings_by_ticker[ticker] = new_entry
-    # Write back combined holdings list
+        else:
+            # fill missing/falsy core fields from live if possible
+            live = live_holdings_map.get(ticker)
+            if live:
+                if (not entry.get('name')) and live.get('name'):
+                    entry['name'] = live.get('name')
+                if (('quantity' not in entry) or entry.get('quantity') in (None, 0)) and live.get('quantity') is not None:
+                    try:
+                        entry['quantity'] = float(live.get('quantity', 0))
+                    except Exception:
+                        entry['quantity'] = 0.0
+                if (('price' not in entry) or entry.get('price') in (None, 0)) and live.get('price') is not None:
+                    try:
+                        entry['price'] = float(live.get('price', 0))
+                    except Exception:
+                        entry['price'] = 0.0
+                if (('value' not in entry) or entry.get('value') in (None, 0)) and live.get('value') is not None:
+                    try:
+                        entry['value'] = float(live.get('value', 0))
+                    except Exception:
+                        entry['value'] = 0.0
+
+        # Apply metadata fields (always overwrite metadata with user's intent)
+        if 'risk' in meta:
+            entry['risk'] = meta.get('risk')
+        if 'category' in meta:
+            entry['category'] = meta.get('category')
+        if 'assetType' in meta:
+            entry['asset_type'] = meta.get('assetType')
+        holdings_by_ticker[ticker] = entry
+
     combined = list(holdings_by_ticker.values())
     # Persist holdings and update portfolio_status updated_at timestamp too
     doc_ref.set({'portfolio': portfolio, 'holdings': combined, 'last_updated': firestore.SERVER_TIMESTAMP, 'updated_at': firestore.SERVER_TIMESTAMP}, merge=True)
@@ -439,3 +508,312 @@ def migrate_from_sqlite(sqlite_path: str = "ticker_data.db") -> None:
         pass
     conn.close()
     print("Migration to Firestore attempted. Verify data in Firestore console.")
+
+# --------- USER-SCOPED (multi-tenant) VARIANTS ---------
+# These wrap the legacy functions but route storage through users/{uid}/<collection>
+# for new multi-tenant architecture. They intentionally keep identical return
+# types so API layers can switch over gradually.
+
+def create_portfolio_user(uid: str, name: str) -> None:
+    client = _ensure_client()
+    if LOG_FIRESTORE:
+        print(f"[firestore][write][user] users/{uid}/{COL_PORTFOLIOS}/{name} (create/merge)")
+    user_collection(client, uid, COL_PORTFOLIOS).document(name).set({"name": name}, merge=True)
+
+
+def save_transactions_user(uid: str, portfolio: str, transactions: List[Dict[str, Any]], max_retries: int = 5, base_delay: float = 0.2) -> List[Dict[str, Any]]:
+    client = _ensure_client()
+    create_portfolio_user(uid, portfolio)
+    inserted: List[Dict[str, Any]] = []
+    batch = client.batch()
+    trans_col = user_collection(client, uid, COL_TRANSACTIONS)
+    for t in transactions:
+        doc_ref = trans_col.document()
+        payload = {
+            "portfolio": portfolio,
+            "ticker": t.get("ticker"),
+            "quantity": float(t.get("quantity", 0)),
+            "price": float(t.get("price", 0)),
+            "date": t.get("date"),
+            "label": t.get("label"),
+            "name": t.get("name"),
+            "created_at": firestore.SERVER_TIMESTAMP,
+        }
+        if LOG_FIRESTORE:
+            print(f"[firestore][batch-write][user] users/{uid}/{COL_TRANSACTIONS}/{doc_ref.id} ticker={payload['ticker']} date={payload['date']}")
+        batch.set(doc_ref, payload)
+        inserted.append({**payload, "id": doc_ref.id})
+    batch.commit()
+    for item in inserted:
+        item.pop('created_at', None)
+    try:
+        from core.portfolio import clear_performance_caches
+        clear_performance_caches(f"{uid}:{portfolio}")  # namespaced cache key suggestion
+    except Exception:
+        pass
+    return inserted
+
+
+def get_transactions_user(uid: str, portfolio: Optional[str] = None) -> List[Dict[str, Any]]:
+    client = _ensure_client()
+    col = user_collection(client, uid, COL_TRANSACTIONS)
+    if portfolio:
+        docs = col.where(filter=FieldFilter("portfolio", "==", portfolio)).order_by("date").stream()
+    else:
+        docs = col.order_by("date").stream()
+    rows: List[Dict[str, Any]] = []
+    for d in docs:
+        r = d.to_dict() or {}
+        r["id"] = d.id
+        rows.append(r)
+    return rows
+
+
+def delete_transaction_user(uid: str, portfolio_name: str, transaction_id: str) -> None:
+    client = _ensure_client()
+    user_collection(client, uid, COL_TRANSACTIONS).document(transaction_id).delete()
+    try:
+        from core.portfolio import clear_performance_caches
+        clear_performance_caches(f"{uid}:{portfolio_name}")
+    except Exception:
+        pass
+
+
+def update_transaction_user(uid: str, portfolio_name: str, transaction_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    client = _ensure_client()
+    doc_ref = user_collection(client, uid, COL_TRANSACTIONS).document(transaction_id)
+    snap = doc_ref.get()
+    if not snap.exists:
+        return None
+    current = snap.to_dict() or {}
+    allowed = {"ticker", "quantity", "price", "date", "label", "name"}
+    payload: Dict[str, Any] = {}
+    for k, v in updates.items():
+        if k in allowed:
+            if k in ("quantity", "price"):
+                try:
+                    payload[k] = float(v)
+                except Exception:
+                    continue
+            else:
+                payload[k] = v
+    if payload:
+        doc_ref.set(payload, merge=True)
+    updated = {**current, **payload, "id": transaction_id}
+    try:
+        from core.portfolio import clear_performance_caches
+        clear_performance_caches(f"{uid}:{portfolio_name}")
+    except Exception:
+        pass
+    return updated
+
+
+def get_all_portfolio_names_user(uid: str) -> List[str]:
+    client = _ensure_client()
+    docs = user_collection(client, uid, COL_PORTFOLIOS).stream()
+    return [d.id for d in docs]
+
+
+def delete_portfolio_user(uid: str, portfolio_name: str) -> None:
+    client = _ensure_client()
+    trans_iter = user_collection(client, uid, COL_TRANSACTIONS).where(filter=FieldFilter("portfolio", "==", portfolio_name)).stream()
+    refs = [d.reference for d in trans_iter]
+    max_batch = 450
+    for i in range(0, len(refs), max_batch):
+        batch = client.batch()
+        for ref in refs[i:i+max_batch]:
+            batch.delete(ref)
+        batch.commit()
+    # Delete holdings + portfolio docs
+    user_collection(client, uid, COL_PORTFOLIO_HOLDINGS).document(portfolio_name).delete()
+    user_collection(client, uid, COL_PORTFOLIOS).document(portfolio_name).delete()
+    try:
+        from core.portfolio import clear_performance_caches
+        clear_performance_caches(f"{uid}:{portfolio_name}")
+    except Exception:
+        pass
+
+
+def save_portfolio_status_user(uid: str, portfolio: str, status: Dict[str, Any]) -> None:
+    client = _ensure_client()
+    payload = {"total_value": float(status.get("total_value", 0)), "last_updated": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP}
+    user_collection(client, uid, COL_PORTFOLIO_STATUS).document(portfolio).set(payload, merge=True)
+    # holdings doc
+    doc_ref = user_collection(client, uid, COL_PORTFOLIO_HOLDINGS).document(portfolio)
+    existing_doc = doc_ref.get()
+    existing_holdings = []
+    if existing_doc.exists:
+        existing_holdings = existing_doc.to_dict().get('holdings', []) or []
+    existing_meta_by_ticker: Dict[str, Dict[str, Any]] = { h.get('ticker'): dict(h) for h in existing_holdings if h.get('ticker') }
+    holdings_list: List[Dict[str, Any]] = []
+    for h in status.get("holdings", []) or []:
+        ticker = h.get('ticker')
+        payload_h: Dict[str, Any] = {
+            "ticker": ticker,
+            "name": h.get("name"),
+            "quantity": float(h.get("quantity", 0)),
+            "price": float(h.get("price", 0)),
+            "value": float(h.get("value", 0)),
+        }
+        if ticker and ticker in existing_meta_by_ticker:
+            existing_entry = existing_meta_by_ticker.get(ticker) or {}
+            for meta_key in ("risk", "category", "asset_type"):
+                if meta_key in existing_entry:
+                    payload_h[meta_key] = existing_entry.get(meta_key)
+        holdings_list.append(payload_h)
+    doc_ref.set({'portfolio': portfolio, 'holdings': holdings_list, 'last_updated': firestore.SERVER_TIMESTAMP, 'updated_at': firestore.SERVER_TIMESTAMP}, merge=True)
+
+
+def get_portfolio_status_saved_user(uid: str, portfolio: str) -> Tuple[Dict[str, Any], Optional[datetime], Optional[datetime]]:
+    client = _ensure_client()
+    doc = user_collection(client, uid, COL_PORTFOLIO_STATUS).document(portfolio).get()
+    if not doc.exists:
+        # fallback: compute live and persist
+        from services import data_fetcher
+        from .tickers import get_ticker_data
+        from .portfolios import get_transactions_user
+        transactions = get_transactions_user(uid, portfolio)
+        positions = aggregate_positions(transactions)
+        holdings: List[Dict[str, Any]] = []
+        total_value = 0.0
+        for ticker, qty in positions.items():
+            if qty == 0:
+                continue
+            data, _ = data_fetcher.fetch_with_cache(ticker)
+            info = (data or {}).get("info", {})
+            price = info.get("regularMarketPrice") or 0
+            name = info.get("shortName") or ticker
+            value = price * qty
+            total_value += value
+            holdings.append({"ticker": ticker, "name": name, "quantity": qty, "price": price, "value": value})
+        save_portfolio_status_user(uid, portfolio, {"total_value": total_value, "holdings": holdings})
+        now = datetime.now()
+        return {"total_value": total_value, "holdings": holdings}, now, now
+    data = doc.to_dict() or {}
+    last_updated = data.get("last_updated") if isinstance(data.get("last_updated"), datetime) else None
+    updated_at = data.get("updated_at") if isinstance(data.get("updated_at"), datetime) else None
+    holdings_doc = user_collection(client, uid, COL_PORTFOLIO_HOLDINGS).document(portfolio).get()
+    holdings = []
+    if holdings_doc.exists:
+        hd = holdings_doc.to_dict() or {}
+        holdings = hd.get('holdings', [])
+    # Compare stored holdings with live-computed holdings and persist live if they differ
+    try:
+        from core.portfolio import get_portfolio_status_user
+        live_status = get_portfolio_status_user(uid, portfolio)
+        live_holdings = live_status.get('holdings', []) if isinstance(live_status, dict) else []
+        stored_map = { h.get('ticker'): h for h in (holdings or []) if h.get('ticker') }
+        live_map = { h.get('ticker'): h for h in (live_holdings or []) if h.get('ticker') }
+        def differs(stored_h, live_h):
+            if not stored_h or not live_h:
+                return True
+            if (stored_h.get('name') or None) != (live_h.get('name') or None):
+                return True
+            for key in ('quantity', 'price', 'value'):
+                try:
+                    s = float(stored_h.get(key, 0) or 0)
+                    l = float(live_h.get(key, 0) or 0)
+                except Exception:
+                    return True
+                if s != l:
+                    return True
+            return False
+
+        need_save = False
+        for tk, lh in live_map.items():
+            sh = stored_map.get(tk)
+            if differs(sh, lh):
+                need_save = True
+                break
+        if not need_save:
+            for tk in stored_map.keys():
+                if tk not in live_map:
+                    need_save = True
+                    break
+
+        if need_save:
+            try:
+                from db.portfolios import save_portfolio_status_user
+                save_portfolio_status_user(uid, portfolio, { 'total_value': live_status.get('total_value', 0), 'holdings': live_holdings })
+                return { 'total_value': live_status.get('total_value', 0), 'holdings': live_holdings }, last_updated, updated_at
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return {"total_value": data.get("total_value", 0), "holdings": holdings}, last_updated, updated_at
+
+
+def save_holdings_metadata_user(uid: str, portfolio: str, metadata_map: Dict[str, Dict[str, Any]]) -> None:
+    client = _ensure_client()
+    doc_ref = user_collection(client, uid, COL_PORTFOLIO_HOLDINGS).document(portfolio)
+    doc = doc_ref.get()
+    existing_holdings = []
+    if doc.exists:
+        existing_holdings = doc.to_dict().get('holdings', []) or []
+    holdings_by_ticker: Dict[str, Dict[str, Any]] = { h.get('ticker'): dict(h) for h in existing_holdings if h.get('ticker') }
+
+    # Attempt to compute live holdings for enrichment where we are missing core fields
+    live_holdings_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        from core.portfolio import get_portfolio_status_user
+        live_status = get_portfolio_status_user(uid, portfolio)
+        for h in (live_status.get('holdings') or []):
+            if h.get('ticker'):
+                live_holdings_map[h.get('ticker')] = {
+                    'ticker': h.get('ticker'),
+                    'name': h.get('name'),
+                    'quantity': float(h.get('quantity', 0) or 0),
+                    'price': float(h.get('price', 0) or 0),
+                    'value': float(h.get('value', 0) or 0),
+                }
+    except Exception:
+        live_holdings_map = {}
+
+    for ticker, meta in metadata_map.items():
+        if not ticker:
+            continue
+        entry = holdings_by_ticker.get(ticker)
+        if entry is None:
+            if ticker in live_holdings_map:
+                entry = dict(live_holdings_map[ticker])
+            else:
+                entry = { 'ticker': ticker, 'name': None, 'quantity': 0.0, 'price': 0.0, 'value': 0.0 }
+        else:
+            live = live_holdings_map.get(ticker)
+            if live:
+                if (not entry.get('name')) and live.get('name'):
+                    entry['name'] = live.get('name')
+                if (('quantity' not in entry) or entry.get('quantity') in (None, 0)) and live.get('quantity') is not None:
+                    try:
+                        entry['quantity'] = float(live.get('quantity', 0))
+                    except Exception:
+                        entry['quantity'] = 0.0
+                if (('price' not in entry) or entry.get('price') in (None, 0)) and live.get('price') is not None:
+                    try:
+                        entry['price'] = float(live.get('price', 0))
+                    except Exception:
+                        entry['price'] = 0.0
+                if (('value' not in entry) or entry.get('value') in (None, 0)) and live.get('value') is not None:
+                    try:
+                        entry['value'] = float(live.get('value', 0))
+                    except Exception:
+                        entry['value'] = 0.0
+
+        if 'risk' in meta:
+            entry['risk'] = meta.get('risk')
+        if 'category' in meta:
+            entry['category'] = meta.get('category')
+        if 'assetType' in meta:
+            entry['asset_type'] = meta.get('assetType')
+        holdings_by_ticker[ticker] = entry
+    combined = list(holdings_by_ticker.values())
+    doc_ref.set({'portfolio': portfolio, 'holdings': combined, 'last_updated': firestore.SERVER_TIMESTAMP, 'updated_at': firestore.SERVER_TIMESTAMP}, merge=True)
+    user_collection(client, uid, COL_PORTFOLIO_STATUS).document(portfolio).set({'updated_at': firestore.SERVER_TIMESTAMP}, merge=True)
+
+
+def save_portfolio_targets_user(uid: str, portfolio: str, mode: str, targets: Dict[str, float]) -> None:
+    client = _ensure_client()
+    doc_ref = user_collection(client, uid, COL_PORTFOLIO_STATUS).document(portfolio)
+    payload = { 'targets': { mode: targets }, 'updated_at': firestore.SERVER_TIMESTAMP }
+    doc_ref.set(payload, merge=True)

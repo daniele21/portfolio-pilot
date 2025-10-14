@@ -4,6 +4,8 @@ import { MOCK_KPIS_DATA } from '../constants';
 import { fetchTickerDetails } from './marketDataService';
 import { idbGet, idbSet, idbDel } from '../utils/idbCache';
 import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
+import { apiFetch } from '../utils/apiFetch';
+import { authFetch } from '../utils/authFetch';
 
 // const API_BASE_URL = 'https://finance-data-server-335283962900.europe-west1.run.app';
 const DEFAULT_PORTFOLIO_ID = 'main'; // Or make this dynamic if multiple portfolios are supported
@@ -34,17 +36,13 @@ const commonPortfolioFetch = async <T>(endpoint: string, portfolioId: string): P
   }
 
   try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) {
-      let errorMsg = `API request failed: ${response.status} ${response.statusText}`;
-      try {
-        const errData = await response.json();
-        errorMsg += ` - ${errData.error || JSON.stringify(errData)}`;
-      } catch (e) { /* ignore */ }
+    const { ok, data, error } = await apiFetch<T>(apiUrl, { method: 'GET', headers });
+    if (!ok) {
+      const errorMsg = error || `API request failed: ${apiUrl}`;
       console.error(`PortfolioService: Error fetching ${apiUrl}. ${errorMsg}`);
       throw new Error(errorMsg);
     }
-    return await response.json() as T;
+    return data as T;
   } catch (error) {
     console.error(`PortfolioService: Network or parsing error fetching ${apiUrl}.`, error);
     return null;
@@ -115,8 +113,8 @@ export const savePortfolioStatus = async (portfolioName: string): Promise<{ stat
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   else return { status: 'error', portfolio: portfolioName, error: 'No ID token' };
   try {
-    const response = await fetch(apiUrl, { method: 'POST', headers });
-    const data = await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'POST', headers });
+    if (!ok) return { status: 'error', portfolio: portfolioName, error: data?.error || 'request failed' };
     // Invalidate cached status so next read is fresh
     try { await idbDel(`status:${portfolioName}`); await idbDel(`status_live:${portfolioName}`); } catch {}
     return data;
@@ -266,27 +264,21 @@ export const processAndApplyMovements = async (fileContent: string): Promise<Pro
 
   console.log(`[PortfolioService] POST ${apiUrl}`, { raw: fileContent });
   try {
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ raw: fileContent }),
-    });
-    const backendResponse = await response.json();
-
-    if (!response.ok || backendResponse.status !== 'saved') {
+    const { ok, data: backendResponse } = await apiFetch<any>(apiUrl, { method: 'POST', headers, body: JSON.stringify({ raw: fileContent }) });
+    if (!ok || backendResponse?.status !== 'saved') {
       return {
         success: false,
-        message: backendResponse.message || response.statusText,
-        error: backendResponse.error,
-        movementsProcessed: backendResponse.count || 0,
+        message: backendResponse?.message || backendResponse?.error || 'Failed to process movements',
+        error: backendResponse?.error,
+        movementsProcessed: backendResponse?.count || 0,
         movementsSkipped: 0,
-        notes: backendResponse.notes || [],
-        successfullyProcessedMovements: backendResponse.transactions || []
+        notes: backendResponse?.notes || [],
+        successfullyProcessedMovements: backendResponse?.transactions || []
       };
     }
 
     // Update local log with standardized transactions if present
-    localAppliedMovementsLog = backendResponse.transactions || [];
+  localAppliedMovementsLog = backendResponse.transactions || [];
     _isInitialized = false; // Force re-fetch on next access
 
     return {
@@ -317,27 +309,20 @@ export const ingestTransactions = async (portfolioName: string, files: File[], r
   const idToken = getAuthIdToken();
   if (!idToken) return { status: 'error', message: 'Not authenticated' };
   try {
-    let response: Response;
+    let data: any = null;
     if (files.length > 0) {
+      // Use authFetch directly for multipart form upload so we don't force JSON content-type
       const form = new FormData();
       files.forEach(f => form.append('file', f, f.name));
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${idToken}` },
-        body: form
-      });
+      const resp = await authFetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${idToken}` }, body: form });
+      data = await resp.json().catch(() => null);
+      if (!resp.ok) return { status: data?.status || 'error', message: data?.error || data?.message || 'Ingestion failed', error: data?.error };
     } else if (rawText) {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raw: rawText })
-      });
+      const { ok, data: respData } = await apiFetch<any>(endpoint, { method: 'POST', idToken, body: JSON.stringify({ raw: rawText }) });
+      data = respData;
+      if (!ok) return { status: data?.status || 'error', message: data?.error || data?.message || 'Ingestion failed', error: data?.error };
     } else {
       return { status: 'error', message: 'No files or raw text provided' };
-    }
-    const data = await response.json();
-    if (!response.ok) {
-      return { status: data.status || 'error', message: data.error || data.message || 'Ingestion failed', error: data.error };
     }
     // On successful ingestion, invalidate relevant caches so UI reloads fresh data
     try {
@@ -372,17 +357,10 @@ export const initialLoad = async (portfolioName: string) => {
 export const fetchTickerName = async (ticker: string, idToken: string | null): Promise<string | null> => {
   if (!ticker || !idToken) return null;
   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/ticker/${ticker}`;
+  const apiUrl = `${cleanApiBaseUrl}/api/ticker/${encodeURIComponent(ticker)}`;
   try {
-    const response = await fetch(apiUrl, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${idToken}`
-      }
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', idToken });
+    if (!ok || !data) return null;
     return data?.data?.info?.shortName || data?.data?.info?.longName || null;
   } catch {
     return null;
@@ -398,12 +376,8 @@ export const fetchPortfolioTargets = async (portfolioName: string): Promise<Reco
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   try {
-    const resp = await fetch(apiUrl, { headers });
-    if (!resp.ok) {
-      console.warn('fetchPortfolioTargets: non-ok response', resp.status);
-      return null;
-    }
-    const data = await resp.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok || !data) { console.warn('fetchPortfolioTargets: non-ok response'); return null; }
     return data.targets || null;
   } catch (e) {
     console.error('fetchPortfolioTargets error', e);
@@ -420,9 +394,8 @@ export const savePortfolioTargets = async (portfolioName: string, mode: 'asset_t
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   try {
-    const resp = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify({ mode, targets }) });
-    const data = await resp.json();
-    return data;
+  const { data } = await apiFetch<any>(apiUrl, { method: 'POST', idToken: getAuthIdToken(), body: JSON.stringify({ mode, targets }) });
+  return data;
   } catch (e) {
     console.error('savePortfolioTargets error', e);
     return { status: 'error', error: e instanceof Error ? e.message : String(e) };
@@ -441,9 +414,8 @@ export const fetchAllPortfolioNames = async (): Promise<string[]> => {
     if (Array.isArray(cached) && cached.length > 0) return cached;
   } catch {}
   try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) throw new Error('Failed to fetch portfolio names');
-    const data = await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok || !data) throw new Error('Failed to fetch portfolio names');
     const toCache = Array.isArray(data.portfolios) ? data.portfolios : [];
     try { await idbSet(cacheKey, toCache, CACHE_TTL_LONG); } catch {}
     return Array.isArray(data.portfolios) ? data.portfolios : [];
@@ -462,10 +434,8 @@ export const fetchPortfolioPerformance = async (portfolioName: string): Promise<
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) return [];
-    const data = await response.json();
-    // The backend returns a list of {date, value}
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok || !data) return [];
     return Array.isArray(data) ? data : [];
   } catch (e) {
     return [];
@@ -476,14 +446,14 @@ export const fetchPortfolioPerformance = async (portfolioName: string): Promise<
 export const fetchTickerPerformance = async (portfolioName: string, ticker: string): Promise<HistoricalDataPoint[]> => {
   if (!portfolioName || !ticker) return [];
   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/ticker/${ticker}/performance`;
+  // Ensure both portfolioName and ticker are URL-encoded to avoid path issues
+  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${encodeURIComponent(portfolioName)}/ticker/${encodeURIComponent(ticker)}/performance`;
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) return [];
-    const data = await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok || !data) return [];
     return Array.isArray(data) ? data : [];
   } catch (e) {
     return [];
@@ -499,9 +469,9 @@ export const fetchPortfolioKpis = async (portfolioName: string): Promise<any> =>
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) return null;
-    return await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok) return null;
+    return data;
   } catch (e) {
     return null;
   }
@@ -517,9 +487,9 @@ export const fetchPortfolioReturnsKpis = async (portfolioName: string): Promise<
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   else return null;
   try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) return null;
-    return await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok) return null;
+    return data;
   } catch (e) {
     return null;
   }
@@ -538,9 +508,9 @@ export const fetchPortfolioAllocation = async (
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   else return null;
   try {
-    const response = await fetch(apiUrl, { headers });
-    if (!response.ok) return null;
-    return await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok) return null;
+    return data;
   } catch (e) {
     return null;
   }
@@ -550,15 +520,15 @@ export const fetchPortfolioAllocation = async (
 export const fetchTickerReport = async (portfolioName: string, ticker: string): Promise<any | null> => {
   if (!portfolioName || !ticker) return null;
   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/ticker/${ticker}/report`;
+  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${encodeURIComponent(portfolioName)}/ticker/${encodeURIComponent(ticker)}/report`;
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   else return null;
   try {
-    const response = await fetch(apiUrl, { method: 'POST', headers });
-    if (!response.ok) return null;
-    return await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'POST', headers });
+    if (!ok) return null;
+    return data;
   } catch (e) {
     return null;
   }
@@ -574,13 +544,9 @@ export const fetchMultiTickerReport = async (portfolioName: string, tickers: str
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   else return null;
   try {
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ tickers })
-    });
-    if (!response.ok) return null;
-    return await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'POST', headers, body: JSON.stringify({ tickers }) });
+    if (!ok) return null;
+    return data;
   } catch (e) {
     return null;
   }
@@ -596,9 +562,9 @@ export const fetchPortfolioReport = async (portfolioName: string, force: boolean
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   else return null;
   try {
-    const response = await fetch(apiUrl, { method: 'POST', headers });
-    if (!response.ok) return null;
-    return await response.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'POST', headers });
+    if (!ok) return null;
+    return data;
   } catch (e) {
     return null;
   }
@@ -628,13 +594,11 @@ export async function fetchPortfolioVolatility(
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   try {
-    const res = await fetch(apiUrl, { headers });
-    if (res.status === 401) {
-      const data = await res.json().catch(() => ({}));
-      throw { status: 401, message: data?.error || 'Invalid or expired token' };
+    const { ok, data, error } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok) {
+      if (typeof error === 'string' && error.includes('401')) throw { status: 401, message: error };
+      return null;
     }
-    if (!res.ok) return null;
-    const data = await res.json();
     return {
       volatility: typeof data?.volatility === 'number' ? data.volatility : null,
       window: typeof data?.window === 'number' ? data.window : null,
@@ -671,10 +635,8 @@ export async function fetchPortfolioVolatilitySeries(
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   try {
-    const res = await fetch(apiUrl, { headers });
-    if (res.status === 401) return null;
-    if (!res.ok) return null;
-    const data = await res.json();
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok || !data) return null;
     if (!data || !Array.isArray(data.series)) return [];
     return data.series.map((pt: any) => ({ date: String(pt.date), volatility: typeof pt.volatility === 'number' ? pt.volatility : null }));
   } catch (e) {

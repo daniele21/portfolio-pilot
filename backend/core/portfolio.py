@@ -7,6 +7,61 @@ from db.database import (
     save_ticker_data,
     get_ticker_data,
 )
+# Local helper: attempt to call user-scoped db functions when uid provided.
+def _get_transactions_for(portfolio_name, uid=None):
+    # defer import to avoid circulars
+    try:
+        if uid:
+            from db.portfolios import get_transactions_user
+            return get_transactions_user(uid, portfolio_name)
+    except Exception:
+        pass
+    try:
+        from db.database import get_transactions
+        return get_transactions(portfolio_name)
+    except Exception:
+        return []
+
+def _get_all_transactions(uid=None):
+    try:
+        if uid:
+            from db.portfolios import get_transactions_user
+            return get_transactions_user(uid, None)
+    except Exception:
+        pass
+    try:
+        from db.database import get_transactions
+        return get_transactions(None)
+    except Exception:
+        return []
+
+def _get_portfolio_status_saved_for(portfolio_name, uid=None):
+    try:
+        if uid:
+            from db.portfolios import get_portfolio_status_saved_user
+            return get_portfolio_status_saved_user(uid, portfolio_name)
+    except Exception:
+        pass
+    try:
+        from db.database import get_portfolio_status_saved
+        return get_portfolio_status_saved(portfolio_name)
+    except Exception:
+        return ({'total_value': 0.0, 'holdings': []}, None, None)
+
+def _get_ticker_history_for(ticker, uid=None):
+    # ticker history and ticker data remain global; still call get_ticker_history
+    try:
+        from db.database import get_ticker_history
+        return get_ticker_history(ticker)
+    except Exception:
+        return []
+
+def _get_ticker_data_for(ticker, uid=None):
+    try:
+        from db.database import get_ticker_data
+        return get_ticker_data(ticker)
+    except Exception:
+        return (None, None)
 from services import data_fetcher
 import time
 from threading import Lock
@@ -88,27 +143,30 @@ def clear_performance_caches(portfolio_name=None, tickers=None):
 
 
 # --- Caching wrappers ---
-def get_cached_portfolio_performance(portfolio_name):
+def get_cached_portfolio_performance(portfolio_name, uid=None):
+    # Namespace the cache key by uid when provided to avoid collisions
+    key = f"{uid}:{portfolio_name}" if uid else portfolio_name
     with _CACHE_LOCK:
-        cached = _get_cache_entry(_PERFORMANCE_CACHE, portfolio_name)
+        cached = _get_cache_entry(_PERFORMANCE_CACHE, key)
         if cached is not None:
             return cached
-    data = compute_portfolio_performance(portfolio_name, _skip_cache=True)
+    data = compute_portfolio_performance(portfolio_name, _skip_cache=True, uid=uid)
     with _CACHE_LOCK:
         try:
-            _set_cache_entry(_PERFORMANCE_CACHE, portfolio_name, data)
+            _set_cache_entry(_PERFORMANCE_CACHE, key, data)
         except Exception:
             pass
     return data
 
 
-def get_cached_ticker_performance(portfolio_name, ticker, start_date=None):
-    key = (portfolio_name, ticker, str(start_date) if start_date else '')
+def get_cached_ticker_performance(portfolio_name, ticker, start_date=None, uid=None):
+    namespaced = f"{uid}:{portfolio_name}" if uid else portfolio_name
+    key = (namespaced, ticker, str(start_date) if start_date else '')
     with _CACHE_LOCK:
         cached = _get_cache_entry(_TICKER_PERFORMANCE_CACHE, key)
         if cached is not None:
             return cached
-    data = compute_ticker_performance(portfolio_name, ticker, start_date, _skip_cache=True)
+    data = compute_ticker_performance(portfolio_name, ticker, start_date, _skip_cache=True, uid=uid)
     with _CACHE_LOCK:
         try:
             _set_cache_entry(_TICKER_PERFORMANCE_CACHE, key, data)
@@ -130,10 +188,9 @@ def get_cached_ticker_performance(portfolio_name, ticker, start_date=None):
 #     return data
 
 
-def get_portfolio_status(portfolio_name):
+def get_portfolio_status(portfolio_name, uid=None):
     """Return current holdings with latest prices using the new normalized ticker tables."""
-    from db.database import get_transactions  # Local import to avoid circular import
-    txs = get_transactions(portfolio_name)
+    txs = _get_transactions_for(portfolio_name, uid=uid)
     positions = aggregate_positions(txs)
     holdings = []
     total_value = 0.0
@@ -142,10 +199,27 @@ def get_portfolio_status(portfolio_name):
             continue
         # Get latest price from ticker_info (Firestore)
         try:
-            data, _ = get_ticker_data(ticker)
+            data, _ = _get_ticker_data_for(ticker, uid=uid)
             info = (data or {}).get('info', {})
-            price = info.get('regularMarketPrice') or 0
-            name = info.get('shortName') or ticker
+            # Try the canonical field first; if missing try to fetch live data and persist it
+            price = info.get('regularMarketPrice')
+            if not price:
+                # attempt to fetch live data and save it so future calls hit the DB
+                try:
+                    fetched, _ = data_fetcher.fetch_with_cache(ticker)
+                    if fetched:
+                        try:
+                            save_ticker_data(ticker, fetched)
+                        except Exception:
+                            # non-fatal if save fails
+                            pass
+                        info = (fetched or {}).get('info', {}) or info
+                except Exception:
+                    # ignore fetch errors and fall back to existing info
+                    pass
+            # Accept a few common alternative field names
+            price = price or info.get('currentPrice') or info.get('lastPrice') or 0
+            name = info.get('shortName') or info.get('name') or ticker
         except Exception:
             price = 0
             name = ticker
@@ -161,10 +235,9 @@ def get_portfolio_status(portfolio_name):
     return {"holdings": holdings, "total_value": total_value}
 
 
-def get_performance(portfolio_name):
+def get_performance(portfolio_name, uid=None):
     """Compute simple performance trend using daily closes."""
-    from db.database import get_transactions  # Local import to avoid circular import
-    txs = get_transactions(portfolio_name)
+    txs = _get_transactions_for(portfolio_name, uid=uid)
     if not txs:
         return []
     first_date = min(t["date"] for t in txs)
@@ -199,17 +272,17 @@ def get_performance(portfolio_name):
     return values
 
 
-def compute_portfolio_performance(portfolio_name, _skip_cache=False):
+def compute_portfolio_performance(portfolio_name, _skip_cache=False, uid=None):
     if not _skip_cache:
-        return get_cached_portfolio_performance(portfolio_name)
-    from db.database import get_transactions  # Local import to avoid circular import
+        # Use the uid-aware cached wrapper to avoid collisions
+        return get_cached_portfolio_performance(portfolio_name, uid=uid)
     """
     Compute the historical portfolio value over time, using each ticker's historical price and the portfolio's transaction history.
     Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_first: ...}, ...]
     'value' is the absolute value, 'pct' is the performance % relative to the cost basis (total invested up to that date).
     'pct_from_first' is the % change from the first abs_value (start of series).
     """
-    txs = get_transactions(portfolio_name)
+    txs = _get_transactions_for(portfolio_name, uid=uid)
     if not txs:
         return []
     df_txs = pd.DataFrame(txs)
@@ -220,13 +293,13 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False):
     all_dates = set()
     ticker_histories = {}
     for ticker in tickers:
-        hist = get_ticker_history(ticker)
+        hist = _get_ticker_history_for(ticker, uid=uid)
         if not hist:
             data, _ = data_fetcher.fetch_with_cache(ticker)
             history = (data or {}).get('history', [])
             if history:
                 save_ticker_data(ticker, data)
-                hist = get_ticker_history(ticker)
+                hist = _get_ticker_history_for(ticker, uid=uid)
         if not hist:
             continue
         df_hist = pd.DataFrame(hist)
@@ -280,10 +353,9 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False):
     return values
 
 
-def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_cache=False):
+def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_cache=False, uid=None):
     if not _skip_cache:
         return get_cached_ticker_performance(portfolio_name, ticker, start_date)
-    from db.database import get_transactions  # Local import to avoid circular import
     """
     Compute the historical value of a single ticker in a portfolio over time, using its transaction history and price history.
     Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_start: ...}, ...]
@@ -291,25 +363,69 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
     'pct_from_start' is the % change from the abs_value at the start_date (or first date if not provided).
     The first entry in the returned list will always have pct_from_start = 0.
     """
-    txs = [t for t in get_transactions(portfolio_name) if t.get('ticker') == ticker]
+    # Normalize matching: consider common alternate fields and compare uppercase trimmed values
+    def _extract_ticker_from_tx(t):
+        for key in ('ticker', 'assetSymbol', 'asset_symbol', 'symbol'):
+            v = t.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip().upper()
+        return None
+
+    ticker_norm = ticker.strip().upper() if isinstance(ticker, str) else ticker
+    txs_all = _get_transactions_for(portfolio_name, uid=uid) or []
+    txs = [t for t in txs_all if _extract_ticker_from_tx(t) == ticker_norm]
     if not txs:
         return []
     import pandas as pd
     df_txs = pd.DataFrame(txs)
-    if df_txs.empty or 'date' not in df_txs.columns or 'quantity' not in df_txs.columns or 'price' not in df_txs.columns:
+    # Diagnostic: ensure required columns are present; require 'date' and 'quantity'
+    required_cols = {'date', 'quantity'}
+    missing = required_cols - set(df_txs.columns)
+    if df_txs.empty or missing:
+        try:
+            import logging
+            logger = None
+            try:
+                # prefer flask logger when available
+                from flask import current_app
+                logger = current_app.logger
+            except Exception:
+                logger = logging.getLogger('backend.core.portfolio')
+            logger.info(f"[DIAG] compute_ticker_performance early return for portfolio={portfolio_name} ticker={ticker} uid={uid} df_txs_empty={df_txs.empty} missing_cols={sorted(list(missing))} txs_sample={txs[:5]}")
+        except Exception:
+            pass
         return []
+    # If 'price' column is missing, fill with zeros (we can still compute market value via ticker history)
+    if 'price' not in df_txs.columns:
+        try:
+            from flask import current_app
+            current_app.logger.info(f"[DIAG] compute_ticker_performance: 'price' missing for portfolio={portfolio_name} ticker={ticker}, filling with zeros")
+        except Exception:
+            pass
+        df_txs['price'] = 0.0
     df_txs['date'] = pd.to_datetime(df_txs['date'])
-    hist = get_ticker_history(ticker)
+    hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
         data, _ = data_fetcher.fetch_with_cache(ticker)
         history = (data or {}).get('history', [])
         if history:
             save_ticker_data(ticker, data)
-            hist = get_ticker_history(ticker)
+            hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
         return []
     df_hist = pd.DataFrame(hist)
     if df_hist.empty or 'date' not in df_hist.columns or 'close' not in df_hist.columns:
+        try:
+            import logging
+            logger = None
+            try:
+                from flask import current_app
+                logger = current_app.logger
+            except Exception:
+                logger = logging.getLogger('backend.core.portfolio')
+            logger.info(f"[DIAG] compute_ticker_performance: bad history for ticker={ticker} portfolio={portfolio_name} uid={uid} df_hist_empty={df_hist.empty} cols={list(df_hist.columns)} sample_hist={(hist[:3] if isinstance(hist, list) else None)}")
+        except Exception:
+            pass
         return []
     df_hist['date'] = pd.to_datetime(df_hist['date'])
     df_hist.set_index('date', inplace=True)
@@ -361,19 +477,19 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
     return values
 
 
-def compute_benchmark_performance(ticker):
+def compute_benchmark_performance(ticker, uid=None):
     """
     Compute the historical performance of a benchmark ticker (not tied to a portfolio).
     Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_first: ...}, ...]
     'value' and 'abs_value' are the same (no cost basis), 'pct' is percent change from the first value, 'pct_from_first' is also percent change from the first value (for frontend consistency).
     """
-    hist = get_ticker_history(ticker)
+    hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
         data, _ = data_fetcher.fetch_with_cache(ticker)
         history = (data or {}).get('history', [])
         if history:
             save_ticker_data(ticker, data)
-            hist = get_ticker_history(ticker)
+            hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
         return []
     df_hist = pd.DataFrame(hist)
@@ -410,12 +526,11 @@ def compute_benchmark_performance(ticker):
     return values
 
 
-def get_overall_asset_allocation(portfolio_name):
+def get_overall_asset_allocation(portfolio_name, uid=None):
     """
     Returns a list of dicts: [{ticker, value, quantity, name, allocation_pct} ...] for all tickers in the portfolio, with their current value, quantity, and allocation as a percentage of total portfolio value.
     """
-    from db.database import get_transactions  # Local import to avoid circular import
-    txs = get_transactions(portfolio_name)
+    txs = _get_transactions_for(portfolio_name, uid=uid)
     positions = aggregate_positions(txs)
     allocation = []
     total_value = 0.0
@@ -424,10 +539,22 @@ def get_overall_asset_allocation(portfolio_name):
         if qty == 0:
             continue
         try:
-            data, _ = get_ticker_data(ticker)
+            data, _ = _get_ticker_data_for(ticker, uid=uid)
             info = (data or {}).get('info', {})
-            price = info.get('regularMarketPrice') or 0
-            name = info.get('shortName') or ticker
+            price = info.get('regularMarketPrice')
+            if not price:
+                try:
+                    fetched, _ = data_fetcher.fetch_with_cache(ticker)
+                    if fetched:
+                        try:
+                            save_ticker_data(ticker, fetched)
+                        except Exception:
+                            pass
+                        info = (fetched or {}).get('info', {}) or info
+                except Exception:
+                    pass
+            price = price or info.get('currentPrice') or info.get('lastPrice') or 0
+            name = info.get('shortName') or info.get('name') or ticker
         except Exception:
             price = 0
             name = ticker
@@ -480,7 +607,7 @@ def get_overall_asset_allocation(portfolio_name):
 #     return allocation
 
 
-def get_asset_allocation_by_category_and_risk(portfolio_name):
+def get_asset_allocation_by_category_and_risk(portfolio_name, uid=None):
     """
     Returns allocation grouped by user-defined 'category' and 'risk' fields stored
     in the `portfolio_holdings` Firestore document for the portfolio (if present).
@@ -493,15 +620,14 @@ def get_asset_allocation_by_category_and_risk(portfolio_name):
     If holdings are not present in Firestore this function returns empty groupings
     (but does not try to compute live holdings). Percentages are 0 when total_value is 0.
     """
-    # Local import to avoid circular imports
+    # Local import to avoid circular imports. Prefer user-scoped variant when uid is provided.
     try:
-        from db.portfolios import get_portfolio_status_saved
-    except Exception:
-        # If import fails, return empty structure
-        return {"total_value": 0.0, "by_category": {}, "by_risk": {}}
-
-    try:
-        status_doc, _, _ = get_portfolio_status_saved(portfolio_name)
+        if uid:
+            from db.portfolios import get_portfolio_status_saved_user
+            status_doc, _, _ = get_portfolio_status_saved_user(uid, portfolio_name)
+        else:
+            from db.portfolios import get_portfolio_status_saved
+            status_doc, _, _ = get_portfolio_status_saved(portfolio_name)
         holdings = status_doc.get("holdings", []) or []
         # Compute total_value from holdings to ensure percentages are
         # derived from the actual summed holdings values. Use the saved
@@ -584,7 +710,7 @@ def get_asset_allocation_by_risk(portfolio_name):
         return { 'total_value': 0.0, 'by_risk': {} }
 
 
-def get_asset_allocation_by_asset_type_and_total(portfolio_name):
+def get_asset_allocation_by_asset_type_and_total(portfolio_name, uid=None):
     """
     Returns allocation grouped by the user-specified 'asset_type' field stored
     in the `portfolio_holdings` Firestore document for the portfolio (if present).
@@ -596,12 +722,12 @@ def get_asset_allocation_by_asset_type_and_total(portfolio_name):
     Percentages are computed against the summed holdings values (computed_total).
     """
     try:
-        from db.portfolios import get_portfolio_status_saved
-    except Exception:
-        return { 'total_value': 0.0, 'by_asset_type': {} }
-
-    try:
-        status_doc, _, _ = get_portfolio_status_saved(portfolio_name)
+        if uid:
+            from db.portfolios import get_portfolio_status_saved_user
+            status_doc, _, _ = get_portfolio_status_saved_user(uid, portfolio_name)
+        else:
+            from db.portfolios import get_portfolio_status_saved
+            status_doc, _, _ = get_portfolio_status_saved(portfolio_name)
         holdings = status_doc.get('holdings', []) or []
         # compute total from holdings values
         computed_total = 0.0
@@ -641,18 +767,18 @@ def get_asset_allocation_by_asset_type_and_total(portfolio_name):
     return { 'total_value': total_value, 'by_asset_type': by_asset_type }
 
 
-def get_asset_allocation_by_asset_type(portfolio_name):
+def get_asset_allocation_by_asset_type(portfolio_name, uid=None):
     """
     Thin wrapper that returns only the by_asset_type mapping with total_value.
     """
     try:
-        full = get_asset_allocation_by_asset_type_and_total(portfolio_name)
+        full = get_asset_allocation_by_asset_type_and_total(portfolio_name, uid=uid)
         return { 'total_value': full.get('total_value', 0.0), 'by_asset_type': full.get('by_asset_type', {}) }
     except Exception:
         return { 'total_value': 0.0, 'by_asset_type': {} }
 
 
-def compute_returns_since(portfolio_name, start_date):
+def compute_returns_since(portfolio_name, start_date, uid=None):
     """
     Compute the portfolio and per-ticker returns since a given start_date (YYYY-MM-DD).
     Returns a dict:
@@ -661,9 +787,10 @@ def compute_returns_since(portfolio_name, start_date):
         'tickers': { ticker: { 'start_value': ..., 'end_value': ..., 'return_pct': ... }, ... }
     }
     """
-    from db.database import get_transactions  # Local import to avoid circular import
     import pandas as pd
-    txs = get_transactions(portfolio_name)
+    txs = _get_transactions_for(portfolio_name, uid=uid)
+    if not txs:
+        return {'portfolio': None, 'tickers': {}}
     if not txs:
         return {'portfolio': None, 'tickers': {}}
     df_txs = pd.DataFrame(txs)
@@ -673,13 +800,13 @@ def compute_returns_since(portfolio_name, start_date):
     tickers = df_txs['ticker'].unique()
     ticker_histories = {}
     for ticker in tickers:
-        hist = get_ticker_history(ticker)
+        hist = _get_ticker_history_for(ticker, uid=uid)
         if not hist:
             data, _ = data_fetcher.fetch_with_cache(ticker)
             history = (data or {}).get('history', [])
             if history:
                 save_ticker_data(ticker, data)
-                hist = get_ticker_history(ticker)
+                hist = _get_ticker_history_for(ticker, uid=uid)
         if not hist:
             continue
         df_hist = pd.DataFrame(hist)
@@ -775,10 +902,9 @@ def compute_returns_since(portfolio_name, start_date):
     }
 
 # Helper functions for common periods
-def get_last_day_possible_returns(portfolio_name):
-    from db.database import get_transactions  # Local import to avoid circular import
+def get_last_day_possible_returns(portfolio_name, uid=None):
     import pandas as pd
-    txs = get_transactions(portfolio_name)
+    txs = _get_transactions_for(portfolio_name, uid=uid)
     if not txs:
         return {'portfolio': None, 'tickers': {}}
     df_txs = pd.DataFrame(txs)
@@ -808,33 +934,33 @@ def get_last_day_possible_returns(portfolio_name):
         return {'portfolio': None, 'tickers': {}}
     # Use the second-to-last date as the start date
     start_day = all_dates_sorted[-2]
-    return compute_returns_since(portfolio_name, start_day.strftime('%Y-%m-%d'))
+    return compute_returns_since(portfolio_name, start_day.strftime('%Y-%m-%d'), uid=uid)
 
-def get_weekly_returns(portfolio_name):
+def get_weekly_returns(portfolio_name, uid=None):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     week_ago = today - pd.Timedelta(days=7)
-    return compute_returns_since(portfolio_name, week_ago.strftime('%Y-%m-%d'))
+    return compute_returns_since(portfolio_name, week_ago.strftime('%Y-%m-%d'), uid=uid)
 
-def get_monthly_returns(portfolio_name):
+def get_monthly_returns(portfolio_name, uid=None):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     month_ago = today - pd.Timedelta(days=30)
-    return compute_returns_since(portfolio_name, month_ago.strftime('%Y-%m-%d'))
+    return compute_returns_since(portfolio_name, month_ago.strftime('%Y-%m-%d'), uid=uid)
 
-def get_three_month_returns(portfolio_name):
+def get_three_month_returns(portfolio_name, uid=None):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     three_months_ago = today - pd.Timedelta(days=90)
-    return compute_returns_since(portfolio_name, three_months_ago.strftime('%Y-%m-%d'))
+    return compute_returns_since(portfolio_name, three_months_ago.strftime('%Y-%m-%d'), uid=uid)
 
-def get_ytd_returns(portfolio_name):
+def get_ytd_returns(portfolio_name, uid=None):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     ytd = pd.Timestamp(year=today.year, month=1, day=1)
-    return compute_returns_since(portfolio_name, ytd.strftime('%Y-%m-%d'))
+    return compute_returns_since(portfolio_name, ytd.strftime('%Y-%m-%d'), uid=uid)
 
-def get_one_year_return(portfolio_name):
+def get_one_year_return(portfolio_name, uid=None):
     """
     Compute the portfolio and per-ticker returns for the last 365 days.
     Returns a dict:
@@ -845,25 +971,33 @@ def get_one_year_return(portfolio_name):
     """
     today = pd.Timestamp.today().normalize()
     one_year_ago = today - pd.Timedelta(days=365)
-    return compute_returns_since(portfolio_name, one_year_ago.strftime('%Y-%m-%d'))
+    return compute_returns_since(portfolio_name, one_year_ago.strftime('%Y-%m-%d'), uid=uid)
 
-def get_ticker_returns_since(portfolio_name, ticker, start_date):
-    from db.database import get_transactions  # Local import to avoid circular import
+def get_ticker_returns_since(portfolio_name, ticker, start_date, uid=None):
     import pandas as pd
-    txs = [t for t in get_transactions(portfolio_name) if t.get('ticker') == ticker]
+    def _extract_ticker_from_tx(t):
+        for key in ('ticker', 'assetSymbol', 'asset_symbol', 'symbol'):
+            v = t.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip().upper()
+        return None
+
+    ticker_norm = ticker.strip().upper() if isinstance(ticker, str) else ticker
+    txs_all = _get_transactions_for(portfolio_name, uid=uid) or []
+    txs = [t for t in txs_all if _extract_ticker_from_tx(t) == ticker_norm]
     if not txs:
         return None
     df_txs = pd.DataFrame(txs)
     if df_txs.empty or 'date' not in df_txs.columns or 'quantity' not in df_txs.columns or 'price' not in df_txs.columns:
         return None
     df_txs['date'] = pd.to_datetime(df_txs['date'])
-    hist = get_ticker_history(ticker)
+    hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
         data, _ = data_fetcher.fetch_with_cache(ticker)
         history = (data or {}).get('history', [])
         if history:
             save_ticker_data(ticker, data)
-            hist = get_ticker_history(ticker)
+            hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
         return None
     df_hist = pd.DataFrame(hist)
@@ -917,25 +1051,25 @@ def get_ticker_weekly_returns(portfolio_name, ticker):
     week_ago = today - pd.Timedelta(days=7)
     return get_ticker_returns_since(portfolio_name, ticker, week_ago.strftime('%Y-%m-%d'))
 
-def get_ticker_monthly_returns(portfolio_name, ticker):
+def get_ticker_monthly_returns(portfolio_name, ticker, uid=None):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     month_ago = today - pd.Timedelta(days=30)
-    return get_ticker_returns_since(portfolio_name, ticker, month_ago.strftime('%Y-%m-%d'))
+    return get_ticker_returns_since(portfolio_name, ticker, month_ago.strftime('%Y-%m-%d'), uid=uid)
 
-def get_ticker_three_month_returns(portfolio_name, ticker):
+def get_ticker_three_month_returns(portfolio_name, ticker, uid=None):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     three_months_ago = today - pd.Timedelta(days=90)
-    return get_ticker_returns_since(portfolio_name, ticker, three_months_ago.strftime('%Y-%m-%d'))
+    return get_ticker_returns_since(portfolio_name, ticker, three_months_ago.strftime('%Y-%m-%d'), uid=uid)
 
-def get_ticker_ytd_returns(portfolio_name, ticker):
+def get_ticker_ytd_returns(portfolio_name, ticker, uid=None):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     ytd = pd.Timestamp(year=today.year, month=1, day=1)
-    return get_ticker_returns_since(portfolio_name, ticker, ytd.strftime('%Y-%m-%d'))
+    return get_ticker_returns_since(portfolio_name, ticker, ytd.strftime('%Y-%m-%d'), uid=uid)
 
-def get_last_three_days_returns(portfolio_name):
+def get_last_three_days_returns(portfolio_name, uid=None):
     """
     Compute the portfolio and per-ticker returns for the last three days (i.e., from three days ago to today).
     Returns a dict:
@@ -947,9 +1081,9 @@ def get_last_three_days_returns(portfolio_name):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     three_days_ago = today - pd.Timedelta(days=3)
-    return compute_returns_since(portfolio_name, three_days_ago.strftime('%Y-%m-%d'))
+    return compute_returns_since(portfolio_name, three_days_ago.strftime('%Y-%m-%d'), uid=uid)
 
-def get_ticker_three_days_returns(portfolio_name, ticker):
+def get_ticker_three_days_returns(portfolio_name, ticker, uid=None):
     """
     Compute the returns for a single ticker in the portfolio for the last three days (from three days ago to today).
     Returns a dict:
@@ -958,7 +1092,7 @@ def get_ticker_three_days_returns(portfolio_name, ticker):
     import pandas as pd
     today = pd.Timestamp.today().normalize()
     three_days_ago = today - pd.Timedelta(days=3)
-    return get_ticker_returns_since(portfolio_name, ticker, three_days_ago.strftime('%Y-%m-%d'))
+    return get_ticker_returns_since(portfolio_name, ticker, three_days_ago.strftime('%Y-%m-%d'), uid=uid)
 
 DEFAULT_VOLATILITY_WINDOW = 30
 VALID_VOLATILITY_WINDOWS = {30, 90, 252}
@@ -1008,9 +1142,12 @@ def _latest_volatility_value(volatility):
 
     return value if not math.isnan(value) else float('nan')
 
-def compute_portfolio_volatility_1d(portfolio_name, window=DEFAULT_VOLATILITY_WINDOW, *, method='rolling'):
-    """Compute rolling annualized portfolio volatility for the requested window."""
-    perf = compute_portfolio_performance(portfolio_name)
+def compute_portfolio_volatility_1d(portfolio_name, window=DEFAULT_VOLATILITY_WINDOW, *, method='rolling', uid=None):
+    """Compute rolling annualized portfolio volatility for the requested window.
+
+    Added `uid` so user-scoped transaction data can be used (when present).
+    """
+    perf = compute_portfolio_performance(portfolio_name, uid=uid)
     import pandas as pd
     if not perf or len(perf) < 2:
         return pd.Series(dtype=float)
@@ -1021,9 +1158,9 @@ def compute_portfolio_volatility_1d(portfolio_name, window=DEFAULT_VOLATILITY_WI
     returns = df['pct'] / 100.0
     return compute_volatility(returns, window=window, method=method)
 
-def compute_portfolio_volatility(portfolio_name, window=None, *, method='rolling'):
+def compute_portfolio_volatility(portfolio_name, window=None, *, method='rolling', uid=None):
     """Compute annualized portfolio volatility using full-history or rolling metrics."""
-    perf = compute_portfolio_performance(portfolio_name)
+    perf = compute_portfolio_performance(portfolio_name, uid=uid)
     import pandas as pd
     if not perf or len(perf) < 2:
         return float('nan')
@@ -1120,14 +1257,13 @@ def compute_portfolio_volatility_for_period(portfolio_name, days):
     return compute_volatility(returns, window=None)
 
 
-def compute_ticker_volatility_for_period(portfolio_name, days):
+def compute_ticker_volatility_for_period(portfolio_name, days, uid=None):
     """
     Compute annualized volatility for each ticker using a lookback in days.
     Returns dict {ticker: volatility}
     """
-    from db.database import get_transactions
     import pandas as pd
-    txs = get_transactions(portfolio_name)
+    txs = _get_transactions_for(portfolio_name, uid=uid)
     if not txs:
         return {}
     df_txs = pd.DataFrame(txs)
@@ -1136,7 +1272,7 @@ def compute_ticker_volatility_for_period(portfolio_name, days):
     tickers = df_txs['ticker'].unique()
     result = {}
     for ticker in tickers:
-        perf = compute_ticker_performance(portfolio_name, ticker)
+        perf = compute_ticker_performance(portfolio_name, ticker, uid=uid)
         if not perf or len(perf) < 2:
             result[ticker] = float('nan')
             continue
@@ -1152,13 +1288,12 @@ def compute_ticker_volatility_for_period(portfolio_name, days):
     return result
 
 
-def get_asset_allocation_by_region(portfolio_name):
+def get_asset_allocation_by_region(portfolio_name, uid=None):
     """
     Returns a dict: {region: allocation_percentage, ...} for all tickers in the portfolio.
     Uses the `region` column from `ticker_info` when present; falls back to 'Unknown'.
     """
-    from db.database import get_transactions  # Local import
-    txs = get_transactions(portfolio_name)
+    txs = _get_transactions_for(portfolio_name, uid=uid)
     positions = aggregate_positions(txs)
     allocation = {}
     total_value = 0.0
@@ -1167,7 +1302,7 @@ def get_asset_allocation_by_region(portfolio_name):
         if qty == 0:
             continue
         try:
-            data, _ = get_ticker_data(ticker)
+            data, _ = _get_ticker_data_for(ticker, uid=uid)
             info = (data or {}).get('info', {})
             price = info.get('regularMarketPrice') or 0
             region = info.get('region') or 'Unknown'

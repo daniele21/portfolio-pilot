@@ -1,5 +1,6 @@
 
-import React, { createContext, useState, useEffect, useContext, useCallback } from 'react';
+import * as React from 'react';
+import { showNotification } from '@mantine/notifications';
 import { jwtDecode } from 'jwt-decode';
 import { setGlobalRefreshStrategy } from './utils/authFetch';
 
@@ -15,21 +16,115 @@ interface AuthContextType {
   idToken: string | null;
   profile: UserProfile | null;
   isLoggedIn: boolean;
-  isGoogleAuthReady: boolean; // New state to indicate GSI library readiness
+  isGoogleAuthReady: boolean; // Indicates GSI library readiness
   handleSignOut: () => void;
+  forceRefresh: () => Promise<string | null>; // Explicit refresh trigger returning Promise
   GOOGLE_CLIENT_ID: string;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const AuthContext = React.createContext<AuthContextType | undefined>(undefined);
 
 const GOOGLE_CLIENT_ID_CONST = '335283962900-7i4ggscsqff6557okn1ddc33me6n0fi0.apps.googleusercontent.com';
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [idToken, setIdToken] = useState<string | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [isGoogleAuthReady, setIsGoogleAuthReady] = useState<boolean>(false); // New state
+interface AuthProviderProps { children: React.ReactNode }
+export const AuthProvider = ({ children }: AuthProviderProps) => {
+  const [idToken, setIdToken] = React.useState<string | null>(null);
+  const [profile, setProfile] = React.useState<UserProfile | null>(null);
+  const [isGoogleAuthReady, setIsGoogleAuthReady] = React.useState<boolean>(false); // New state
+  const refreshPromiseRef = React.useRef<Promise<string | null> | null>(null);
+  const refreshTimerRef = React.useRef<number | null>(null);
 
-  const handleCredentialResponse = useCallback((response: any) => {
+  // Clear any pending scheduled refresh
+  const clearScheduledRefresh = () => {
+    if (refreshTimerRef.current) {
+      window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+  };
+
+  const decodeExpiry = (token: string): number | null => {
+    try {
+      const decoded: any = jwtDecode(token);
+      if (decoded && typeof decoded.exp === 'number') return decoded.exp; // seconds epoch
+    } catch {/* ignore */}
+    return null;
+  };
+
+  const scheduleRefresh = React.useCallback((token: string) => {
+    clearScheduledRefresh();
+    const exp = decodeExpiry(token);
+    if (!exp) return; // can't schedule
+    const nowSec = Math.floor(Date.now() / 1000);
+    // Refresh 5 minutes before expiry (or immediately if within that window)
+    const refreshAtSec = exp - 300; // 5 minutes early
+    const delayMs = (refreshAtSec - nowSec) * 1000;
+    if (delayMs <= 0) {
+      // Expiring soon or already past window; trigger immediate refresh attempt (non-blocking)
+      forceRefresh();
+      return;
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      forceRefresh();
+    }, delayMs);
+  }, []);
+
+  const forceRefresh = React.useCallback((): Promise<string | null> => {
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    // If GSI not ready, resolve null
+    if (!(window as any).google?.accounts?.id) {
+      return Promise.resolve(null);
+    }
+    refreshPromiseRef.current = new Promise<string | null>((resolve) => {
+      try {
+        const gsi = (window as any).google.accounts.id;
+        gsi.initialize({
+          client_id: GOOGLE_CLIENT_ID_CONST,
+          callback: (resp: any) => {
+            const newTokenResp: string | null = resp && resp.credential ? resp.credential : null;
+            if (newTokenResp) {
+              localStorage.setItem('idToken', newTokenResp);
+              setIdToken(newTokenResp);
+              try {
+                const decodedToken: any = jwtDecode(newTokenResp);
+                setProfile({
+                  email: decodedToken.email,
+                  name: decodedToken.name,
+                  picture: decodedToken.picture,
+                  given_name: decodedToken.given_name,
+                  family_name: decodedToken.family_name,
+                });
+              } catch (err) {
+                console.error('[AuthContext] Error decoding refreshed token', err);
+              }
+              scheduleRefresh(newTokenResp);
+            }
+            resolve(newTokenResp);
+            refreshPromiseRef.current = null;
+          }
+        });
+        // Prompt usually silent if user already granted consent (One Tap / auto sign-in)
+        gsi.prompt((notification: any) => {
+          if (notification && (notification.isNotDisplayed?.() || notification.isSkippedMoment?.())) {
+            // Could not display or skipped; allow resolution if callback not already fired
+            // If still pending after small timeout, resolve null.
+            setTimeout(() => {
+              if (refreshPromiseRef.current) {
+                resolve(null);
+                refreshPromiseRef.current = null;
+              }
+            }, 500);
+          }
+        });
+      } catch (e) {
+        console.error('[AuthContext] forceRefresh error', e);
+        resolve(null);
+        refreshPromiseRef.current = null;
+      }
+    });
+    return refreshPromiseRef.current;
+  }, []);
+
+  const handleCredentialResponse = React.useCallback((response: any) => {
     console.log("[AuthContext] Google Sign-In: Credential response received", response);
     const token = response.credential;
     if (token) {
@@ -45,6 +140,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           given_name: decodedToken.given_name,
           family_name: decodedToken.family_name,
         });
+        scheduleRefresh(token);
       } catch (error) {
         console.error("[AuthContext] Error decoding ID token:", error);
         setProfile(null);
@@ -52,13 +148,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } else {
       console.error("[AuthContext] Google Sign-In: No credential found in response.");
     }
-  }, []);
+  }, [scheduleRefresh]);
   
-  const handleSignOut = useCallback(() => {
+  const handleSignOut = React.useCallback(() => {
     console.log("[AuthContext] Signing out user.");
     setIdToken(null);
     setProfile(null);
     localStorage.removeItem('idToken');
+    clearScheduledRefresh();
     // Consider if google.accounts.id.disableAutoSelect() or similar needs to be called
     // Clear global refresh strategy when the user signs out
     try {
@@ -69,7 +166,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
 
-  useEffect(() => {
+  React.useEffect(() => {
     const storedToken = localStorage.getItem('idToken');
     if (storedToken) {
       console.log("[AuthContext] Found stored ID token in localStorage.");
@@ -83,6 +180,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           given_name: decodedToken.given_name,
           family_name: decodedToken.family_name,
         });
+        scheduleRefresh(storedToken);
       } catch (error) {
         console.error("[AuthContext] Error decoding stored ID token:", error);
         localStorage.removeItem('idToken');
@@ -99,50 +197,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     callback: handleCredentialResponse,
                 });
                 setIsGoogleAuthReady(true); // GSI initialized successfully
-                // Register a global refresh strategy so other code (authFetch) can request fresh tokens
-                setGlobalRefreshStrategy(async () => {
-                  return new Promise<string | null>((resolve) => {
-                    try {
-                      const gsi: any = (window as any).google;
-                      if (!gsi || !gsi.accounts || !gsi.accounts.id) {
-                        console.warn('[AuthContext] GSI not available for global refresh');
-                        resolve(null);
-                        return;
-                      }
-                      // Temporarily initialize with a callback that will capture the new credential
-                      gsi.accounts.id.initialize({
-                        client_id: GOOGLE_CLIENT_ID_CONST,
-                        callback: (resp: any) => {
-                          if (resp && resp.credential) {
-                            localStorage.setItem('idToken', resp.credential);
-                            // update local state as well
-                            setIdToken(resp.credential);
-                            try {
-                              const decodedToken: any = jwtDecode(resp.credential);
-                              setProfile({
-                                email: decodedToken.email,
-                                name: decodedToken.name,
-                                picture: decodedToken.picture,
-                                given_name: decodedToken.given_name,
-                                family_name: decodedToken.family_name,
-                              });
-                            } catch (err) {
-                              console.error('[AuthContext] Error decoding refreshed token', err);
-                            }
-                            resolve(resp.credential);
-                          } else {
-                            resolve(null);
-                          }
-                        }
-                      });
-                      // Prompt for the token (this may show UI depending on GSI state)
-                      gsi.accounts.id.prompt();
-                    } catch (e) {
-                      console.error('[AuthContext] global refresh strategy failed', e);
-                      resolve(null);
-                    }
-                  });
-                });
+                // Register the global refresh strategy referencing forceRefresh
+                setGlobalRefreshStrategy(() => forceRefresh());
                 console.log("[AuthContext] Google Sign-In initialized successfully.");
             } catch (initError) {
                 console.error("[AuthContext] Error during google.accounts.id.initialize:", initError);
@@ -178,21 +234,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // Cleanup: ensure global refresh strategy is cleared if this provider unmounts
-    return () => {
-      try { setGlobalRefreshStrategy(null); } catch (e) { /* ignore */ }
+    const onTokenExpired = (ev: any) => {
+      console.warn('[AuthContext] Received auth:token_expired event', ev?.detail);
+      // Notify the user and sign them out so they can relogin
+      showNotification({
+        title: 'Session expired',
+        message: 'Your session has expired. Please sign in again.',
+        color: 'yellow',
+        autoClose: 8000,
+      });
+      handleSignOut();
+    };
+    const onInvalidToken = (ev: any) => {
+      console.warn('[AuthContext] Received auth:invalid_token event', ev?.detail);
+      showNotification({
+        title: 'Authentication error',
+        message: 'Your session is no longer valid. Please sign in again.',
+        color: 'red',
+        autoClose: 8000,
+      });
+      handleSignOut();
     };
 
-  }, [handleCredentialResponse, isGoogleAuthReady]); // Added isGoogleAuthReady to dependencies to prevent re-polling if already ready
+    window.addEventListener('auth:token_expired', onTokenExpired as EventListener);
+    window.addEventListener('auth:invalid_token', onInvalidToken as EventListener);
+
+    return () => {
+      try { setGlobalRefreshStrategy(null); } catch (e) { /* ignore */ }
+      window.removeEventListener('auth:token_expired', onTokenExpired as EventListener);
+      window.removeEventListener('auth:invalid_token', onInvalidToken as EventListener);
+    };
+
+  }, [handleCredentialResponse, isGoogleAuthReady, forceRefresh, scheduleRefresh, handleSignOut]); // include dependencies
 
   return (
-    <AuthContext.Provider value={{ idToken, profile, isLoggedIn: !!idToken, isGoogleAuthReady, handleSignOut, GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID_CONST }}>
+    <AuthContext.Provider value={{ idToken, profile, isLoggedIn: !!idToken, isGoogleAuthReady, handleSignOut, forceRefresh, GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID_CONST }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
 export const useAuth = (): AuthContextType => {
-  const context = useContext(AuthContext);
+  const context = React.useContext(AuthContext);
   if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
