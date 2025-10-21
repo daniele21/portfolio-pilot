@@ -28,6 +28,11 @@ export interface HistoricalDataPoint {
   equity?: number;
   twr_daily_pct?: number;
   twr_cum_pct?: number;
+  twr_index?: number;
+  twr_index_pct?: number;
+  flow?: number;
+  cumulative_flow?: number;
+  net_value?: number;
   // pct_from_first removed - now calculated client-side when needed for Performance view
   // Backend compatibility aliases (some endpoints now return these names)
   total_value?: number; // cost-basis

@@ -562,6 +562,30 @@ export const fetchPortfolioPerformance = async (portfolioName: string): Promise<
         equity: Number(h.equity ?? 0) || 0,
         twr_daily_pct: Number(h.twr_daily_pct ?? 0) || 0,
         twr_cum_pct: Number(h.twr_cum_pct ?? 0) || 0,
+        twr_index: (() => {
+          const raw = Number(h.twr_index);
+          return Number.isFinite(raw) ? raw : undefined;
+        })(),
+        twr_index_pct: (() => {
+          const indexRaw = Number(h.twr_index);
+          if (Number.isFinite(indexRaw)) {
+            return (indexRaw - 1) * 100;
+          }
+          const pct = Number(h.twr_index_pct ?? h.twr_cum_pct);
+          return Number.isFinite(pct) ? pct : undefined;
+        })(),
+        flow: (() => {
+          const value = Number(h.flow ?? h.net_flow);
+          return Number.isFinite(value) ? value : undefined;
+        })(),
+        cumulative_flow: (() => {
+          const value = Number(h.cumulative_flow ?? h.flow_cumulative);
+          return Number.isFinite(value) ? value : undefined;
+        })(),
+        net_value: (() => {
+          const value = Number(h.net_value);
+          return Number.isFinite(value) ? value : undefined;
+        })(),
         // pct_from_first removed - calculated client-side when needed
         // Backend fields for compatibility
         total_value: Number(h.total_value ?? 0) || 0,

@@ -13,31 +13,37 @@ const buildNormalizedTwrSeries = (
   const sorted = [...points].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
-  let cumulative = 1;
   let baseline: number | null = null;
+  let runningIndex = 1;
   const usable = [];
-  // Rebuild cumulative TWR by compounding daily returns and rebase to the first point in-range
+  // Rebuild cumulative TWR by preferring backend-provided index, falling back to daily or cumulative pct
   for (const point of sorted) {
+    const indexRaw = point.twr_index;
     const dailyRaw = point.twr_daily_pct;
     const cumRaw = point.twr_cum_pct;
-    let nextCumulative: number | null = null;
-    if (typeof dailyRaw === 'number' && Number.isFinite(dailyRaw)) {
-      nextCumulative = cumulative * (1 + dailyRaw / 100);
+    let index: number | null = null;
+    if (typeof indexRaw === 'number' && Number.isFinite(indexRaw)) {
+      index = indexRaw;
+      runningIndex = indexRaw;
     } else if (typeof cumRaw === 'number' && Number.isFinite(cumRaw)) {
-      nextCumulative = 1 + cumRaw / 100;
+      index = 1 + cumRaw / 100;
+      runningIndex = index;
+    } else if (typeof dailyRaw === 'number' && Number.isFinite(dailyRaw)) {
+      const next = runningIndex * (1 + dailyRaw / 100);
+      runningIndex = next;
+      index = next;
     }
-    if (nextCumulative === null) {
+    if (index === null) {
       continue;
     }
-    cumulative = nextCumulative;
     if (baseline === null) {
-      baseline = cumulative;
+      baseline = index;
     }
     const safeBaseline =
       baseline !== null && Math.abs(baseline) > 1e-12 ? baseline : 1;
     usable.push({
       time: point.date,
-      value: (cumulative / safeBaseline - 1) * 100
+      value: (index / safeBaseline - 1) * 100
     });
   }
   if (usable.length === 0) return null;

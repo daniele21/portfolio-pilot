@@ -478,6 +478,7 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False, uid=None, d
     cash_balance = 0.0          # running cash in base currency
     equity_prev = None          # previous day's equity (market + cash)
     twr_cum = 1.0               # cumulative TWR multiplier
+    cumulative_external_flow = 0.0  # running sum of external deposits/withdrawals
     external_ops = {'deposit', 'withdraw', 'withdrawal', 'transfer', 'transfer in', 'transfer out'}
     # For each date, compute per-ticker PMC average cost and use that to build totals
     for date in all_dates:
@@ -627,6 +628,8 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False, uid=None, d
         # Update cash & compute equity
         cash_balance += cash_change
         equity = total_market_value + cash_balance
+        cumulative_external_flow += external_flow
+        net_value = equity - cumulative_external_flow
 
         # --- NEW: daily TWR ---
         if equity_prev is None or abs(equity_prev) < 1e-12:
@@ -676,6 +679,11 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False, uid=None, d
                 'equity': float(equity),
                 'twr_daily_pct': float(r_t * 100.0),
                 'twr_cum_pct': float((twr_cum - 1.0) * 100.0),
+                'twr_index': float(twr_cum),
+                'twr_index_pct': float((twr_cum - 1.0) * 100.0),
+                'flow': float(external_flow),
+                'cumulative_flow': float(cumulative_external_flow),
+                'net_value': float(net_value),
                 'unrealized_pct': float(pct_unrealized),
             })
         except Exception:

@@ -407,28 +407,34 @@ const SimpleHome: React.FC = () => {
         const sorted = [...filteredPerformanceData].sort(
           (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
         );
-        let cumulative = 1;
+        let runningIndex = 1;
         let baseline: number | null = null;
         let lastNormalized: number | null = null;
         for (const point of sorted) {
+          const indexRaw = point.twr_index;
           const dailyRaw = point.twr_daily_pct;
           const cumRaw = point.twr_cum_pct;
-          let nextCumulative: number | null = null;
-          if (typeof dailyRaw === 'number' && Number.isFinite(dailyRaw)) {
-            nextCumulative = cumulative * (1 + dailyRaw / 100);
+          let index: number | null = null;
+          if (typeof indexRaw === 'number' && Number.isFinite(indexRaw)) {
+            index = indexRaw;
+            runningIndex = indexRaw;
           } else if (typeof cumRaw === 'number' && Number.isFinite(cumRaw)) {
-            nextCumulative = 1 + cumRaw / 100;
+            index = 1 + cumRaw / 100;
+            runningIndex = index;
+          } else if (typeof dailyRaw === 'number' && Number.isFinite(dailyRaw)) {
+            const next = runningIndex * (1 + dailyRaw / 100);
+            runningIndex = next;
+            index = next;
           }
-          if (nextCumulative === null) {
+          if (index === null) {
             continue;
           }
-          cumulative = nextCumulative;
           if (baseline === null) {
-            baseline = cumulative;
+            baseline = index;
           }
           const safeBaseline =
             baseline !== null && Math.abs(baseline) > 1e-12 ? baseline : 1;
-          lastNormalized = (cumulative / safeBaseline - 1) * 100;
+          lastNormalized = (index / safeBaseline - 1) * 100;
         }
         return lastNormalized === null ? 'N/A' : `${lastNormalized.toFixed(2)}%`;
       }
