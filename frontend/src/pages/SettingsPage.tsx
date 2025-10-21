@@ -156,7 +156,7 @@ const SettingsPage: React.FC = () => {
                     <ul className="list-disc list-inside text-xs mt-1 space-y-1 max-h-40 overflow-y-auto">
                       {feedback.processedMovementsList.map((mov, index) => (
                         <li key={`succ-${index}`} className={styles.textColor}>
-                          {mov.date} | {mov.type.toUpperCase()} | {mov.assetName || mov.assetSymbol || 'General'} | Qty: {mov.quantity ?? '-'} | Price: {mov.price ?? '-'} | Total: {mov.amount.toLocaleString()} {mov.currency}
+                          {mov.date} | {((mov as any).operation || (mov as any).type || (mov as any).label || '').toString().toUpperCase()} | {mov.assetName || mov.assetSymbol || 'General'} | Qty: {mov.quantity ?? '-'} | Price: {mov.price ?? '-'} | Total: {mov.amount.toLocaleString()} {mov.currency}
                         </li>
                       ))}
                     </ul>

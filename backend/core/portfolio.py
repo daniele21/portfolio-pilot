@@ -62,6 +62,39 @@ def _get_ticker_data_for(ticker, uid=None):
         return get_ticker_data(ticker)
     except Exception:
         return (None, None)
+
+
+def _normalize_transactions_signs(txs):
+    """Return a copy of txs where quantities are normalized so buys are positive and sells negative.
+
+    Uses the 'operation' field when present. If operation is missing, preserves existing sign.
+    """
+    if not txs:
+        return txs
+    sell_ops = {'sell', 's', 'withdraw', 'withdrawal', 'out'}
+    buy_ops = {'buy', 'b', 'deposit', 'in'}
+    normalized = []
+    for t in txs:
+        try:
+            tt = dict(t)
+        except Exception:
+            tt = t
+        try:
+            qty = float(tt.get('quantity', 0) or 0)
+        except Exception:
+            qty = 0.0
+        try:
+            op = (tt.get('operation') or '').strip().lower()
+        except Exception:
+            op = ''
+        if op in sell_ops and qty > 0:
+            qty = -abs(qty)
+        elif op in buy_ops and qty < 0:
+            qty = abs(qty)
+        # preserve other cases
+        tt['quantity'] = qty
+        normalized.append(tt)
+    return normalized
 from services import data_fetcher
 import time
 from threading import Lock
@@ -106,51 +139,49 @@ def _set_cache_entry(cache: dict, key, data):
 
 
 # Helper to clear caches (call after transaction changes)
-def clear_performance_caches(portfolio_name=None, tickers=None):
+def clear_performance_caches(portfolio_name=None, tickers=None, uid=None):
+    """Clear in-memory performance caches.
+
+    When uid is provided, clears namespaced keys (f"{uid}:{portfolio}") to ensure
+    user-scoped data is recomputed. If portfolio_name is None, clears all caches.
+    """
     with _CACHE_LOCK:
-        if portfolio_name:
-            # remove portfolio-level performance
-            try:
-                _PERFORMANCE_CACHE.pop(portfolio_name, None)
-            except Exception:
-                pass
-            # remove multi-ticker entries for this portfolio
-            try:
-                keys_multi = [k for k in list(_MULTI_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == portfolio_name]
-                for k in keys_multi:
-                    _MULTI_TICKER_PERFORMANCE_CACHE.pop(k, None)
-            except Exception:
-                pass
-            # remove ticker-level entries for this portfolio
-            try:
-                if tickers:
-                    # remove specific tickers
-                    for t in tickers:
-                        keys_to_remove = [k for k in list(_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == portfolio_name and k[1] == t]
-                        for k in keys_to_remove:
-                            _TICKER_PERFORMANCE_CACHE.pop(k, None)
-                else:
-                    # remove all tickers for this portfolio
-                    keys_to_remove = [k for k in list(_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == portfolio_name]
-                    for k in keys_to_remove:
-                        _TICKER_PERFORMANCE_CACHE.pop(k, None)
-            except Exception:
-                pass
-        else:
+        if portfolio_name is None:
+            # Global clear
             _PERFORMANCE_CACHE.clear()
             _TICKER_PERFORMANCE_CACHE.clear()
             _MULTI_TICKER_PERFORMANCE_CACHE.clear()
+            return
+        namespaced = f"{uid}:{portfolio_name}" if uid else portfolio_name
+        # Portfolio-level cache
+        _PERFORMANCE_CACHE.pop(namespaced, None)
+        # Ticker-level cache entries
+        if tickers:
+            tickers_set = set(tickers)
+            to_remove = [k for k in list(_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == namespaced and k[1] in tickers_set]
+        else:
+            to_remove = [k for k in list(_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == namespaced]
+        for k in to_remove:
+            _TICKER_PERFORMANCE_CACHE.pop(k, None)
+        # Multi-ticker cache entries
+        if tickers:
+            tickers_set = set(tickers)
+            multi_remove = [k for k in list(_MULTI_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == namespaced and (set(k[1]) & tickers_set)]
+        else:
+            multi_remove = [k for k in list(_MULTI_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == namespaced]
+        for k in multi_remove:
+            _MULTI_TICKER_PERFORMANCE_CACHE.pop(k, None)
 
 
 # --- Caching wrappers ---
-def get_cached_portfolio_performance(portfolio_name, uid=None):
+def get_cached_portfolio_performance(portfolio_name, uid=None, debug: bool = False):
     # Namespace the cache key by uid when provided to avoid collisions
     key = f"{uid}:{portfolio_name}" if uid else portfolio_name
     with _CACHE_LOCK:
         cached = _get_cache_entry(_PERFORMANCE_CACHE, key)
         if cached is not None:
             return cached
-    data = compute_portfolio_performance(portfolio_name, _skip_cache=True, uid=uid)
+    data = compute_portfolio_performance(portfolio_name, _skip_cache=True, uid=uid, debug=debug)
     with _CACHE_LOCK:
         try:
             _set_cache_entry(_PERFORMANCE_CACHE, key, data)
@@ -175,28 +206,69 @@ def get_cached_ticker_performance(portfolio_name, ticker, start_date=None, uid=N
     return data
 
 
-# def get_cached_multi_ticker_performance(portfolio_name, tickers, start_date=None):
-#     now = time.time()
-#     key = (portfolio_name, tuple(sorted(tickers)), str(start_date) if start_date else '')
-#     with _CACHE_LOCK:
-#         entry = _MULTI_TICKER_PERFORMANCE_CACHE.get(key)
-#         if entry and now - entry['ts'] < _CACHE_TTL:
-#             return entry['data']
-#     data = compute_multi_ticker_performance(portfolio_name, tickers, start_date, _skip_cache=True)
-#     with _CACHE_LOCK:
-#         _MULTI_TICKER_PERFORMANCE_CACHE[key] = {'data': data, 'ts': now}
-#     return data
-
-
 def get_portfolio_status(portfolio_name, uid=None):
     """Return current holdings with latest prices using the new normalized ticker tables."""
     txs = _get_transactions_for(portfolio_name, uid=uid)
+    txs = _normalize_transactions_signs(txs)
     positions = aggregate_positions(txs)
     holdings = []
+    # total_value is reported as the cost-basis (avg_cost * abs(qty))
     total_value = 0.0
+    # also keep total_market_value so callers can access the market valuation
+    total_market_value = 0.0
+    # aggregate unrealized (market - cost_basis) across holdings
+    total_unrealized = 0.0
     for ticker, qty in positions.items():
         if qty == 0:
             continue
+        # Compute average cost (PMC) for the ticker using a simple moving-average
+        # method: iterate transactions in chronological order, accumulate buys
+        # into total_cost/total_qty, and on sells reduce total_qty and total_cost
+        # proportionally. This produces the average cost per remaining share.
+        try:
+            # Filter ticker transactions and sort by date
+            txs_for_tk = [t for t in (txs or []) if (t.get('ticker') or '').strip().upper() == (ticker or '').strip().upper()]
+            def _parse_date(d):
+                try:
+                    return pd.to_datetime(d)
+                except Exception:
+                    return None
+            txs_for_tk.sort(key=lambda x: (_parse_date(x.get('date')) or datetime.min))
+            total_qty = 0.0
+            total_cost = 0.0
+            for t in txs_for_tk:
+                try:
+                    t_qty = float(t.get('quantity', 0) or 0)
+                except Exception:
+                    t_qty = 0.0
+                # Interpret explicit operation flags (sell) similarly to db.aggregate_positions
+                try:
+                    op = (t.get('operation') or '').strip().lower()
+                except Exception:
+                    op = ''
+                if t_qty >= 0 and op in ('sell', 's', 'withdraw', 'withdrawal', 'out'):
+                    t_qty = -abs(t_qty)
+                try:
+                    t_price = float(t.get('price', 0) or 0)
+                except Exception:
+                    t_price = 0.0
+                if t_qty > 0:
+                    total_cost += t_qty * t_price
+                    total_qty += t_qty
+                elif t_qty < 0:
+                    sell_qty = -t_qty
+                    if total_qty > 0:
+                        cost_per_unit = (total_cost / total_qty) if total_qty else 0.0
+                        reduction_qty = min(sell_qty, total_qty)
+                        total_cost -= reduction_qty * cost_per_unit
+                        total_qty -= reduction_qty
+                    else:
+                        # selling without prior buys — set totals to zero (no cost basis)
+                        total_qty = max(total_qty - sell_qty, 0.0)
+                        total_cost = 0.0
+            avg_cost = (total_cost / total_qty) if total_qty else 0.0
+        except Exception:
+            avg_cost = 0.0
         # Get latest price from ticker_info (Firestore)
         try:
             data, _ = _get_ticker_data_for(ticker, uid=uid)
@@ -223,21 +295,56 @@ def get_portfolio_status(portfolio_name, uid=None):
         except Exception:
             price = 0
             name = ticker
-        value = price * qty
-        total_value += value
+        market_value = price * qty
+        # accumulate market value separately
+        total_market_value += market_value
+        # Ensure avg_cost is non-negative and use absolute qty for cost-basis
+        try:
+            avg_cost = abs(float(avg_cost) if avg_cost is not None else 0.0)
+        except Exception:
+            avg_cost = 0.0
+        # Use avg_cost (PMC) for reported holding 'value' and for total_value; make them positive
+        cost_value = avg_cost * abs(qty)
+        # total_value represents the cost-basis of the portfolio (sum of cost_value)
+        total_value += cost_value
+        # Unrealized P/L relative to average cost (PMC) - preserves sign to show gain/loss
+        try:
+            unrealized_pnl = qty * (price - avg_cost)
+        except Exception:
+            unrealized_pnl = 0.0
+        # accumulate net unrealized pnl for portfolio-level metric
+        try:
+            total_unrealized += float(unrealized_pnl or 0.0)
+        except Exception:
+            pass
         holdings.append({
             "ticker": ticker,
             "name": name,
-            "quantity": qty,
+            # Keep both signed and absolute quantity for clarity
+            "signed_quantity": qty,
+            "quantity": abs(qty),
             "price": price,
-            "value": value,
+            "market_value": market_value,
+            # 'value' is cost-basis (avg_cost * abs(qty)) and is non-negative
+            "value": cost_value,
+            "avg_cost": avg_cost,
+            "unrealized_pnl": unrealized_pnl,
         })
-    return {"holdings": holdings, "total_value": total_value}
+    # Return both American and British spelling aliases for compatibility
+    return {
+        "holdings": holdings,
+        "total_value": total_value,
+        "total_market_value": total_market_value,
+        # British and American spellings for compatibility
+        "net_unrealised_pnl": total_unrealized,
+        "net_unrealized_pnl": total_unrealized,
+    }
 
 
 def get_performance(portfolio_name, uid=None):
     """Compute simple performance trend using daily closes."""
     txs = _get_transactions_for(portfolio_name, uid=uid)
+    txs = _normalize_transactions_signs(txs)
     if not txs:
         return []
     first_date = min(t["date"] for t in txs)
@@ -272,17 +379,22 @@ def get_performance(portfolio_name, uid=None):
     return values
 
 
-def compute_portfolio_performance(portfolio_name, _skip_cache=False, uid=None):
+def compute_portfolio_performance(portfolio_name, _skip_cache=False, uid=None, debug: bool = False):
     if not _skip_cache:
         # Use the uid-aware cached wrapper to avoid collisions
         return get_cached_portfolio_performance(portfolio_name, uid=uid)
-    """
-    Compute the historical portfolio value over time, using each ticker's historical price and the portfolio's transaction history.
-    Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_first: ...}, ...]
-    'value' is the absolute value, 'pct' is the performance % relative to the cost basis (total invested up to that date).
-    'pct_from_first' is the % change from the first abs_value (start of series).
+    """Compute daily portfolio snapshots using the same PMC average-cost logic as `get_portfolio_status`.
+
+    For each day we compute:
+      - total_value: cost-basis of remaining holdings (sum of avg_cost * abs(qty) per ticker)
+      - total_market_value: market valuation using historical close for that date
+      - net_unrealised_pnl / net_unrealized_pnl: total unrealized pnl (market - cost basis)
+
+    The implementation mirrors `get_portfolio_status` per-ticker accounting but scoped to transactions
+    up to each date in the historical series so the per-day snapshots are consistent with the snapshot logic.
     """
     txs = _get_transactions_for(portfolio_name, uid=uid)
+    txs = _normalize_transactions_signs(txs)
     if not txs:
         return []
     df_txs = pd.DataFrame(txs)
@@ -311,29 +423,135 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False, uid=None):
         all_dates.update(df_hist.index)
     if not ticker_histories:
         return []
+    # NOTE: Do not infer missing BUY prices here; align with /kpis snapshot semantics.
+    # Transactions with price <= 0 contribute zero to cost basis (same as get_portfolio_status).
     # --- Fill date gaps: create a complete date range from min to max date ---
     if all_dates:
-        min_date = min(all_dates)
-        max_date = max(all_dates)
-        all_dates = pd.date_range(start=min_date, end=max_date, freq='D')
+        # Compute global max date and per-ticker earliest date. We choose the
+        # start_date as the max of the transaction first date and the latest
+        # among tickers' first-history dates. This prevents starting on a day
+        # where some tickers have no prior price (which would yield price=0).
+        max_hist_date = max(all_dates)
+        # Compute per-ticker first history date and take the max
+        first_hist_dates = []
+        for tk, series in ticker_histories.items():
+            try:
+                idx = series.index
+                if len(idx) > 0:
+                    first_hist_dates.append(min(idx))
+            except Exception:
+                continue
+        max_first_hist_date = max(first_hist_dates) if first_hist_dates else None
+        first_tx_date = df_txs['date'].min()
+        # start at the later of first_tx_date and the latest per-ticker first history
+        if first_tx_date is not None and max_first_hist_date is not None:
+            start_date = max(first_tx_date, max_first_hist_date)
+        elif first_tx_date is not None:
+            start_date = first_tx_date
+        elif max_first_hist_date is not None:
+            start_date = max_first_hist_date
+        else:
+            start_date = min(all_dates)
+        if start_date > max_hist_date:
+            return []  # no overlapping window
+        all_dates = pd.date_range(start=start_date, end=max_hist_date, freq='D')
     else:
         all_dates = []
+    # Pre-sort transactions per ticker for efficient cumulative traversal
+    txs_by_ticker = {}
+    for ticker in tickers:
+        df_t = df_txs[df_txs['ticker'] == ticker].sort_values('date').copy()
+        txs_by_ticker[ticker] = df_t.to_dict('records') if not df_t.empty else []
+
+    # State trackers per ticker
+    state = {
+        ticker: {
+            'idx': 0,  # next transaction index to apply
+            'remaining_qty': 0.0,
+            'running_cost_basis': 0.0  # cost basis of remaining shares (active invested capital)
+        } for ticker in tickers
+    }
+
     values = []
-    first_abs_value = None
+    first_market = None
+    # --- NEW: TWR / cash bookkeeping ---
+    cash_balance = 0.0          # running cash in base currency
+    equity_prev = None          # previous day's equity (market + cash)
+    twr_cum = 1.0               # cumulative TWR multiplier
+    external_ops = {'deposit', 'withdraw', 'withdrawal', 'transfer', 'transfer in', 'transfer out'}
+    # For each date, compute per-ticker PMC average cost and use that to build totals
     for date in all_dates:
         total_value = 0.0
-        total_cost = 0.0
-        total_abs_value = 0.0
+        total_market_value = 0.0
+        total_unrealized = 0.0
+        # cumulative realized P/L up to this date (portfolio-level)
+        total_realized = 0.0
+        # cumulative total cost spent (sum of buy quantity * price) up to this date
+        total_cost_spent = 0.0
+        day_details = [] if debug else None
         for ticker in tickers:
-            txs_ticker = df_txs[(df_txs['ticker'] == ticker) & (df_txs['date'] <= date)]
-            qty = txs_ticker['quantity'].sum() if not txs_ticker.empty else 0.0
-            # Cost basis: sum of all buy transactions up to this date
-            cost = txs_ticker[txs_ticker['quantity'] > 0]
-            cost_sum = (cost['quantity'] * cost['price']).sum() if not cost.empty else 0.0
-            total_cost += cost_sum
+            # Filter transactions for this ticker up to the date
+            txs_ticker = df_txs[(df_txs['ticker'] == ticker) & (df_txs['date'] <= date)].copy()
+            # replicate the PMC avg-cost algorithm from get_portfolio_status
+            total_qty = 0.0
+            total_cost = 0.0
+            # realized P/L for this ticker up to the date (cumulative)
+            realized_for_ticker = 0.0
+            # total cost spent for this ticker up to the date (sum of buys)
+            spent_for_ticker = 0.0
+            if not txs_ticker.empty:
+                # Sort by date to ensure chronological order
+                txs_ticker.sort_values('date', inplace=True)
+                for _, t in txs_ticker.iterrows():
+                    try:
+                        t_qty = float(t.get('quantity', 0) or 0)
+                    except Exception:
+                        t_qty = 0.0
+                    try:
+                        op = (t.get('operation') or '').strip().lower()
+                    except Exception:
+                        op = ''
+                    if t_qty >= 0 and op in ('sell', 's', 'withdraw', 'withdrawal', 'out'):
+                        t_qty = -abs(t_qty)
+                    try:
+                        t_price = float(t.get('price', 0) or 0)
+                    except Exception:
+                        t_price = 0.0
+                    if t_qty > 0:
+                        total_cost += t_qty * t_price
+                        total_qty += t_qty
+                        try:
+                            spent_for_ticker += t_qty * t_price
+                        except Exception:
+                            spent_for_ticker += 0.0
+                    elif t_qty < 0:
+                        sell_qty = -t_qty
+                        if total_qty > 0:
+                            cost_per_unit = (total_cost / total_qty) if total_qty else 0.0
+                            reduction_qty = min(sell_qty, total_qty)
+                            # realized P/L = quantity sold * (sell_price - cost_per_unit)
+                            try:
+                                realized_for_ticker += reduction_qty * (t_price - cost_per_unit)
+                            except Exception:
+                                realized_for_ticker += 0.0
+                            total_cost -= reduction_qty * cost_per_unit
+                            total_qty -= reduction_qty
+                        else:
+                            # Selling without prior buys: no cost basis to match against
+                            # follow existing logic: set totals to zero
+                            total_qty = max(total_qty - sell_qty, 0.0)
+                            total_cost = 0.0
+            # avg_cost for remaining shares
+            avg_cost = (total_cost / total_qty) if total_qty else 0.0
+            # accumulate per-ticker spent into portfolio-level total_cost_spent
+            try:
+                total_cost_spent += float(abs(spent_for_ticker) or 0.0)
+            except Exception:
+                total_cost_spent += 0.0
+
+            # get price for the date
             series = ticker_histories.get(ticker, pd.Series())
             price = series.get(date, None)
-            # Treat NaN as missing: try forward-fill, otherwise default to 0.0
             if price is None or pd.isna(price):
                 try:
                     ffilled = series.loc[:date].ffill()
@@ -341,15 +559,131 @@ def compute_portfolio_performance(portfolio_name, _skip_cache=False, uid=None):
                     price = last if (last is not None and not pd.isna(last)) else 0.0
                 except Exception:
                     price = 0.0
-            abs_value = qty * (price if price is not None else 0.0)
-            net_value = abs_value - cost_sum
-            total_value += net_value
-            total_abs_value += abs_value
-        pct = ((total_value) / total_cost * 100) if total_cost else 0.0
-        if first_abs_value is None and total_abs_value != 0.0:
-            first_abs_value = total_abs_value
-        pct_from_first = ((total_abs_value - first_abs_value) / first_abs_value * 100) if first_abs_value else 0.0
-        values.append({'date': date.strftime('%Y-%m-%d'), 'value': total_value, 'abs_value': total_abs_value, 'pct': pct, 'pct_from_first': pct_from_first})
+
+            qty = total_qty
+            market_value = qty * (price if price is not None else 0.0)
+            cost_value = abs(avg_cost) * abs(qty)
+            if debug:
+                day_details.append({
+                    'ticker': ticker,
+                    'qty': qty,
+                    'avg_cost': avg_cost,
+                    'price': (price if price is not None else None),
+                    'market_value': market_value,
+                    'cost_value': cost_value,
+                })
+            try:
+                unrealized_pnl = qty * (price - avg_cost)
+            except Exception:
+                unrealized_pnl = 0.0
+            # accumulate totals for this ticker (always)
+            total_market_value += market_value
+            total_value += cost_value
+            # accumulate realized P/L for the portfolio (cumulative up to this date)
+            try:
+                total_realized += float(realized_for_ticker or 0.0)
+            except Exception:
+                total_realized += 0.0
+
+
+        if first_market is None and total_market_value != 0.0:
+            first_market = total_market_value
+        # Removed pct_from_first computation - frontend will compute this from total_market_value
+
+        # --- NEW: compute today's cash flow from transactions and external flows ---
+        # Select only transactions on this date (normalized to day)
+        today_mask = df_txs['date'].dt.normalize() == pd.Timestamp(date).normalize()
+        today_txs = df_txs[today_mask] if not df_txs.empty else df_txs.iloc[0:0]
+
+        cash_change = 0.0
+        external_flow = 0.0
+
+        for _, tx in (today_txs.iterrows() if not today_txs.empty else []):
+            op = (tx.get('operation') or '').strip().lower()
+            try:
+                q = float(tx.get('quantity') or 0.0)
+            except Exception:
+                q = 0.0
+            try:
+                p = float(tx.get('price') or 0.0)
+            except Exception:
+                p = 0.0
+
+            if q != 0.0:
+                # Economic cash rule with existing conventions:
+                # Buy:  q>0  -> cash out (negative)
+                # Sell: q<0  -> cash in  (positive)
+                gross = abs(q) * abs(p)
+                cash_effect = (-gross) if q > 0 else (+gross)
+            else:
+                # qty==0: fees/commissions/taxes (p<0) reduce cash; dividends (p>0) increase cash
+                cash_effect = p
+
+            cash_change += cash_effect
+
+            if op in external_ops:
+                external_flow += cash_effect  # deposits/withdrawals/transfers excluded from returns
+
+        # Update cash & compute equity
+        cash_balance += cash_change
+        equity = total_market_value + cash_balance
+
+        # --- NEW: daily TWR ---
+        if equity_prev is None or abs(equity_prev) < 1e-12:
+            r_t = 0.0
+        else:
+            r_t = (equity - equity_prev - external_flow) / equity_prev
+
+        twr_cum *= (1.0 + r_t)
+        equity_prev = equity
+
+        # Compute portfolio-level net unrealised pnl defensively from totals
+        # net_unrealised should reflect unrealised P/L = market_value - cost-basis
+        # (total_value is the cost-basis of remaining holdings). Previously this
+        # used total_cost_spent (cumulative buys) which is incorrect once sells
+        # reduce the remaining cost-basis.
+        net_unrealised = float(total_market_value - total_value)
+        # Compute performance as (net_realized + unrealized) / total_cost_spent
+        # effective_cost = total_cost_spent if total_cost_spent > 1e-9 else 0.0
+        try:
+            # keep existing pct behavior (legacy): uses total_cost_spent gating
+            pct = net_unrealised / total_value * 100.0 if total_cost_spent else 0.0
+        except Exception:
+            pct = 0.0
+
+        # Unrealized ROI on remaining cost basis (explicit, always computed when cost basis exists)
+        try:
+            pct_unrealized = (net_unrealised / total_value * 100.0) if total_value else 0.0
+        except Exception:
+            pct_unrealized = 0.0
+
+        row = {
+            'date': date.strftime('%Y-%m-%d'),
+            'total_value': total_value,
+            'total_market_value': total_market_value,
+            'net_unrealized_pnl': net_unrealised,
+            'pct': pct,
+            # cumulative realized gains (portfolio-level)
+            'realized_pnl': total_realized,
+            # cumulative total cost spent (sum of buy amounts up to this date)
+            'total_cost_spent': total_cost_spent,
+            # Removed pct_from_first - frontend normalizes total_market_value to percent-from-first
+        }
+        # --- NEW: expose cash, equity and TWR metrics while keeping existing fields ---
+        try:
+            row.update({
+                'cash': float(cash_balance),
+                'equity': float(equity),
+                'twr_daily_pct': float(r_t * 100.0),
+                'twr_cum_pct': float((twr_cum - 1.0) * 100.0),
+                'unrealized_pct': float(pct_unrealized),
+            })
+        except Exception:
+            # Defensive: if conversion fails, still return base row
+            pass
+        if debug:
+            row['details'] = day_details
+        values.append(row)
     return values
 
 
@@ -358,10 +692,9 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
         return get_cached_ticker_performance(portfolio_name, ticker, start_date)
     """
     Compute the historical value of a single ticker in a portfolio over time, using its transaction history and price history.
-    Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_start: ...}, ...]
+    Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ...}, ...]
     'value' is the net value (market value minus cost spent), 'pct' is the performance % relative to the cost spent for that ticker up to that date.
-    'pct_from_start' is the % change from the abs_value at the start_date (or first date if not provided).
-    The first entry in the returned list will always have pct_from_start = 0.
+    'abs_value' contains the absolute market value - frontend can compute percent-from-first using normalizeToPercent.
     """
     # Normalize matching: consider common alternate fields and compare uppercase trimmed values
     def _extract_ticker_from_tx(t):
@@ -373,6 +706,7 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
 
     ticker_norm = ticker.strip().upper() if isinstance(ticker, str) else ticker
     txs_all = _get_transactions_for(portfolio_name, uid=uid) or []
+    txs_all = _normalize_transactions_signs(txs_all)
     txs = [t for t in txs_all if _extract_ticker_from_tx(t) == ticker_norm]
     if not txs:
         return []
@@ -446,10 +780,66 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
     values = []
     abs_value_at_start = None
     for idx, date in enumerate(all_dates):
-        qty = df_txs[df_txs['date'] <= date]['quantity'].sum() if not df_txs.empty else 0.0
-        # Cost basis: sum of all buy transactions up to this date
-        cost = df_txs[(df_txs['date'] <= date) & (df_txs['quantity'] > 0)]
-        cost_sum = (cost['quantity'] * cost['price']).sum() if not cost.empty else 0.0
+        # Reconstruct remaining quantity and running cost basis using PMC logic identical to portfolio-level
+        txs_to_date = df_txs[df_txs['date'] <= date].sort_values('date') if not df_txs.empty else pd.DataFrame()
+        remaining_qty = 0.0
+        running_cost = 0.0
+        hist_series = df_hist['close']
+        if not txs_to_date.empty:
+            for _, row in txs_to_date.iterrows():
+                try:
+                    t_qty = float(row.get('quantity', 0) or 0)
+                except Exception:
+                    t_qty = 0.0
+                try:
+                    t_price = float(row.get('price', 0) or 0)
+                except Exception:
+                    t_price = 0.0
+                if t_qty > 0 and (not t_price or t_price <= 0):
+                    # attempt amount inference
+                    for k in ('amount', 'total', 'cost'):
+                        try:
+                            amt = float(row.get(k, 0) or 0)
+                        except Exception:
+                            amt = 0.0
+                        if amt > 0 and t_qty != 0:
+                            inferred = amt / t_qty
+                            if inferred > 0:
+                                t_price = inferred
+                                break
+                    if t_price <= 0:
+                        try:
+                            tx_date = row.get('date')
+                            tx_price = hist_series.loc[:tx_date].ffill().iloc[-1] if not hist_series.loc[:tx_date].empty else None
+                            if tx_price is not None and not pd.isna(tx_price):
+                                t_price = float(tx_price)
+                        except Exception:
+                            pass
+                if t_qty > 0:
+                    running_cost += t_qty * t_price
+                    remaining_qty += t_qty
+                elif t_qty < 0:
+                    sell_qty = -t_qty
+                    if remaining_qty > 0:
+                        if sell_qty >= remaining_qty:
+                            running_cost = 0.0
+                            remaining_qty = 0.0
+                        else:
+                            try:
+                                cost_removed = (sell_qty / remaining_qty) * running_cost if remaining_qty else 0.0
+                            except Exception:
+                                cost_removed = 0.0
+                            running_cost -= cost_removed
+                            remaining_qty -= sell_qty
+                            if running_cost < 0:
+                                running_cost = 0.0
+                            if remaining_qty < 0:
+                                remaining_qty = 0.0
+                    else:
+                        remaining_qty = 0.0
+                        running_cost = 0.0
+        qty = remaining_qty
+        cost_sum = running_cost
         series = df_hist['close']
         price = series.get(date, None)
         if price is None or pd.isna(price):
@@ -465,23 +855,17 @@ def compute_ticker_performance(portfolio_name, ticker, start_date=None, _skip_ca
         # Set abs_value_at_start to the first nonzero abs_value in the filtered range
         if idx == 0:
             abs_value_at_start = abs_value
-        # pct_from_start: always 0 for the first entry, else normal calculation (guard for zero)
-        if idx == 0:
-            pct_from_start = 0.0
-        else:
-            if abs_value_at_start:
-                pct_from_start = ((abs_value - abs_value_at_start) / abs_value_at_start * 100)
-            else:
-                pct_from_start = 0.0
-        values.append({'date': date.strftime('%Y-%m-%d'), 'value': net_value, 'abs_value': abs_value, 'pct': pct, 'pct_from_start': pct_from_start})
+        # Removed pct_from_start computation - frontend will compute this from abs_value using normalizeToPercent
+        values.append({'date': date.strftime('%Y-%m-%d'), 'value': net_value, 'abs_value': abs_value, 'pct': pct})
     return values
 
 
 def compute_benchmark_performance(ticker, uid=None):
     """
     Compute the historical performance of a benchmark ticker (not tied to a portfolio).
-    Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ..., pct_from_first: ...}, ...]
-    'value' and 'abs_value' are the same (no cost basis), 'pct' is percent change from the first value, 'pct_from_first' is also percent change from the first value (for frontend consistency).
+    Returns a list of dicts: [{date: ..., value: ..., abs_value: ..., pct: ...}, ...]
+    'value' and 'abs_value' are the same (no cost basis), 'pct' is percent change from the first value.
+    Frontend can compute percent-from-first using normalizeToPercent on the abs_value series.
     """
     hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
@@ -521,8 +905,8 @@ def compute_benchmark_performance(ticker, uid=None):
         if first_value is None and abs_value != 0.0:
             first_value = abs_value
         pct = ((abs_value - first_value) / first_value * 100) if first_value else 0.0
-        pct_from_first = pct  # For consistency with portfolio performance
-        values.append({'date': date.strftime('%Y-%m-%d'), 'value': abs_value, 'abs_value': abs_value, 'pct': pct, 'pct_from_first': pct_from_first})
+        # Removed pct_from_first - frontend will compute this from abs_value using normalizeToPercent
+        values.append({'date': date.strftime('%Y-%m-%d'), 'value': abs_value, 'abs_value': abs_value, 'pct': pct})
     return values
 
 
@@ -631,15 +1015,23 @@ def get_asset_allocation_by_category_and_risk(portfolio_name, uid=None):
         holdings = status_doc.get("holdings", []) or []
         # Compute total_value from holdings to ensure percentages are
         # derived from the actual summed holdings values. Use the saved
-        # `total_value` only as a fallback when holdings are empty or
-        # when parsing fails.
+        # `total_market_value` (preferred) or per-holding `market_value` is
+        # now the canonical measure for current allocations. Fall back to
+        # the legacy `value` when market_value is not present for
+        # compatibility with older docs.
         computed_total = 0.0
         for h in holdings:
             try:
-                computed_total += float(h.get("value", 0) or 0.0)
+                # prefer market_value, fall back to legacy value
+                val = h.get("market_value")
+                if val is None:
+                    val = h.get("value", 0)
+                computed_total += float(val or 0.0)
             except Exception:
                 continue
-        total_value = float(computed_total) if computed_total else float(status_doc.get("total_value", 0) or 0.0)
+        # Prefer an explicit total_market_value when present; otherwise
+        # fall back to computed per-holding totals or the legacy total_value.
+        total_value = float(computed_total) if computed_total else float(status_doc.get("total_market_value", status_doc.get("total_value", 0) or 0.0))
     except Exception:
         return {"total_value": 0.0, "by_category": {}, "by_risk": {}}
 
@@ -650,7 +1042,11 @@ def get_asset_allocation_by_category_and_risk(portfolio_name, uid=None):
     for h in holdings:
         try:
             ticker = h.get("ticker") or h.get("ticker_symbol") or None
-            value = float(h.get("value", 0) or 0.0)
+            # prefer market_value when present, fall back to legacy 'value'
+            _val = h.get('market_value')
+            if _val is None:
+                _val = h.get('value', 0)
+            value = float(_val or 0.0)
             # Use only the explicit 'category' field from saved holdings.
             # Do NOT fall back to 'asset_type' here because that mixes
             # different classification schemes and can produce unexpected
@@ -744,7 +1140,11 @@ def get_asset_allocation_by_asset_type_and_total(portfolio_name, uid=None):
     for h in holdings:
         try:
             ticker = h.get('ticker') or h.get('ticker_symbol') or None
-            value = float(h.get('value', 0) or 0.0)
+            # prefer market_value (current valuation) and fall back to legacy 'value'
+            _v = h.get('market_value')
+            if _v is None:
+                _v = h.get('value', 0)
+            value = float(_v or 0.0)
             asset_type = h.get('asset_type') or 'Unknown'
         except Exception:
             continue
@@ -789,6 +1189,7 @@ def compute_returns_since(portfolio_name, start_date, uid=None):
     """
     import pandas as pd
     txs = _get_transactions_for(portfolio_name, uid=uid)
+    txs = _normalize_transactions_signs(txs)
     if not txs:
         return {'portfolio': None, 'tickers': {}}
     if not txs:
@@ -984,6 +1385,7 @@ def get_ticker_returns_since(portfolio_name, ticker, start_date, uid=None):
 
     ticker_norm = ticker.strip().upper() if isinstance(ticker, str) else ticker
     txs_all = _get_transactions_for(portfolio_name, uid=uid) or []
+    txs_all = _normalize_transactions_signs(txs_all)
     txs = [t for t in txs_all if _extract_ticker_from_tx(t) == ticker_norm]
     if not txs:
         return None

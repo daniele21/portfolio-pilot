@@ -152,21 +152,51 @@ export const generateAlertId = (): string => {
 
 // Simulate checking alerts (in a real app, this would be done by a backend service)
 export const checkAlerts = async (portfolioName: string): Promise<AlertCondition[]> => {
+  const cacheKey = `${ALERTS_CACHE_KEY}:triggers:${portfolioName}`;
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   try {
-  const base = cleanApiBaseUrl(API_BASE_URL);
-  const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}/check`;
+    // Try to use cached triggered alerts if they are fresh (within 24h)
+    try {
+      const stored = await idbGet(cacheKey);
+      if (stored && typeof stored === 'object') {
+        const { ts, triggered } = stored as any;
+        if (ts && (Date.now() - ts) < ONE_DAY_MS && Array.isArray(triggered)) {
+          return triggered as AlertCondition[];
+        }
+      }
+    } catch (e) {
+      // ignore cache read errors and continue to network request
+    }
+
+    const base = cleanApiBaseUrl(API_BASE_URL);
+    const apiUrl = `${base}/api/alerts/${encodeURIComponent(portfolioName)}/check`;
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
     const idToken = getAuthIdToken();
     const resp = await authFetch(apiUrl, { method: 'GET', headers, idToken, refresh: googleRefreshIdToken });
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    if (data && Array.isArray(data.triggered)) {
-      // triggered array contains enriched conditions; cast for consumer
-      return data.triggered as AlertCondition[];
+    if (!resp.ok) {
+      // If network failed, try to return stale cache if available
+      try {
+        const stale = await idbGet(cacheKey);
+        if (stale && typeof stale === 'object' && Array.isArray((stale as any).triggered)) {
+          return (stale as any).triggered as AlertCondition[];
+        }
+      } catch (e) {
+        /* ignore */
+      }
+      return [];
     }
-    return [];
+    const data = await resp.json();
+    const triggered = (data && Array.isArray(data.triggered)) ? data.triggered as AlertCondition[] : [];
+    // Cache the triggered results with timestamp
+    try {
+      await idbSet(cacheKey, { ts: Date.now(), triggered });
+    } catch (e) {
+      // ignore cache write failures
+    }
+    return triggered;
   } catch (e) {
     console.warn('Failed to check alerts', e);
+    // final fallback: return empty array
     return [];
   }
 };

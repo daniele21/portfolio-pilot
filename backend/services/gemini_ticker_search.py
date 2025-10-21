@@ -14,7 +14,7 @@ import json
 import time
 import threading
 from typing import Any, Dict, List
-from core.gemini_cost import GEMINI_2_5_FLASH_LITE_PREVIEW_06_17
+from core.gemini_cost import GEMINI_2_5_FLASH_LITE, GEMINI_2_5_FLASH_LITE_PREVIEW_06_17
 
 import google.generativeai as genai
 
@@ -84,7 +84,7 @@ def _extract_json(text: str) -> str | None:
 
 def gemini_ticker_search(
     query: str,
-    model_name: str | None = GEMINI_2_5_FLASH_LITE_PREVIEW_06_17,
+    model_name: str | None = GEMINI_2_5_FLASH_LITE,
     temperature: float = 0.0,
     max_output_tokens: int = 256,
     grounding: bool = True,

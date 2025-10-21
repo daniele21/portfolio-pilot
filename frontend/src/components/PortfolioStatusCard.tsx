@@ -37,7 +37,9 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
     category: 170,
     assetType: 110,
     quantity: 90,
-    price: 90,
+    avg_cost: 90,
+    market_value: 110,
+    unrealized: 110,
     value: 110,
   };
   const COL_WIDTHS_STORAGE_KEY = `ps_col_widths_v1`;
@@ -119,13 +121,21 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
   // handleResetMeta intentionally removed; Reset button is commented out
 
   // React Query live status
-  const { data: liveStatus, isFetching: statusFetching, error: statusError } = usePortfolioStatusLive(portfolioName, getAuthIdToken(), { enabled: !!portfolioName });
+  const enabledFlag = !!portfolioName;
+  const statusOptions = React.useMemo(() => ({ enabled: enabledFlag }), [enabledFlag]);
+  const idToken = React.useMemo(() => getAuthIdToken(), []);
+  const { data: liveStatus, isFetching: statusFetching, error: statusError } = usePortfolioStatusLive(portfolioName, idToken, statusOptions);
 
   // Sync into local state without changing rest of component logic
   useEffect(() => {
     if (statusFetching) setLoading(true);
     if (!statusFetching) setLoading(false);
   }, [statusFetching]);
+
+  // Keep a stable ref to parent callback to avoid re-running this effect when
+  // the parent recreates the function on each render.
+  const onHoldingsLoadedRef = React.useRef(onHoldingsLoaded);
+  onHoldingsLoadedRef.current = onHoldingsLoaded;
 
   useEffect(() => {
     if (statusError) {
@@ -136,12 +146,15 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
       const resolved = (liveStatus as any) && (liveStatus as any).status ? (liveStatus as any).status : liveStatus;
       setStatus(resolved as any);
       setError(null);
-      if (onHoldingsLoaded && resolved?.holdings) {
+      const cb = onHoldingsLoadedRef.current;
+      if (cb && resolved?.holdings) {
         const holdingsForTickers = resolved.holdings.map((h: any) => ({ ticker: h.ticker, name: h.name || h.ticker }));
-        onHoldingsLoaded(holdingsForTickers);
+        try { cb(holdingsForTickers); } catch (e) { /* swallow callback errors */ }
       }
     }
-  }, [liveStatus, statusError, onHoldingsLoaded]);
+    // Intentionally exclude onHoldingsLoaded from deps to avoid loops caused by
+    // parent callback identity changes — we use a ref above to call the latest.
+  }, [liveStatus, statusError]);
 
   const requestSort = (key: string) => {
     let direction: 'asc' | 'desc' = 'asc';
@@ -156,6 +169,26 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
       return <span className="opacity-50"><ArrowUpIcon className="h-3 w-3 inline-block" /><ArrowDownIcon className="h-3 w-3 inline-block -ml-1" /></span>;
     }
     return sortConfig.direction === 'asc' ? <ArrowUpIcon className="h-4 w-4 inline-block" /> : <ArrowDownIcon className="h-4 w-4 inline-block" />;
+  };
+
+  // Formatting helpers for unrealized P/L (color + sign)
+  const formatPl = (v?: number) => {
+    if (v === null || v === undefined) return '—';
+    const n = Number(v || 0);
+    const sign = n > 0 ? '+' : '';
+    try {
+      return sign + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    } catch (e) {
+      return sign + n.toFixed(2);
+    }
+  };
+
+  const unrealizedClass = (v?: number) => {
+    if (v === null || v === undefined) return 'text-gray-200';
+    const n = Number(v || 0);
+    if (n > 0) return 'text-green-400';
+    if (n < 0) return 'text-red-400';
+    return 'text-gray-200';
   };
 
   // Sort holdings
@@ -178,9 +211,17 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
           valA = a.quantity;
           valB = b.quantity;
           break;
-        case 'price':
-          valA = a.price;
-          valB = b.price;
+        case 'avg_cost':
+          valA = a.avg_cost;
+          valB = b.avg_cost;
+          break;
+        case 'market_value':
+          valA = a.market_value;
+          valB = b.market_value;
+          break;
+        case 'unrealized':
+          valA = a.unrealized_pnl;
+          valB = b.unrealized_pnl;
           break;
         case 'value':
           valA = a.value;
@@ -190,7 +231,7 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
           valA = '';
           valB = '';
       }
-      if (['quantity', 'price', 'value'].includes(sortConfig.key)) {
+      if (['quantity', 'avg_cost', 'market_value', 'unrealized', 'value'].includes(sortConfig.key)) {
         return sortConfig.direction === 'asc'
           ? (Number(valA) - Number(valB))
           : (Number(valB) - Number(valA));
@@ -308,18 +349,7 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
     </th>
   );
 
-  const staticHeader = (label: string, key: string) => (
-    <th
-      style={{ width: colWidths[key] }}
-      className={`${headerClassBase}`}
-      onDoubleClick={() => resetColumnWidth(key)}
-    >
-      <div className="flex items-center gap-1">
-        <span>{label}</span>
-      </div>
-      {resizerHandle(key)}
-    </th>
-  );
+  // staticHeader removed — not used in this table
 
   return (
     <div className="bg-gradient-to-br from-gray-800 to-gray-850 rounded-2xl shadow-xl border border-gray-700/70 overflow-hidden">
@@ -370,12 +400,15 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
             <tr>
               {sortableHeader('Ticker', 'ticker')}
               {sortableHeader('Name', 'name')}
-              {staticHeader('Risk', 'risk')}
-              {staticHeader('Category', 'category')}
-              {staticHeader('Asset Type', 'assetType')}
+              {sortableHeader('Risk', 'risk')}
+              {sortableHeader('Category', 'category')}
+              {sortableHeader('Asset Type', 'assetType')}
               {sortableHeader('Qty', 'quantity')}
-              {sortableHeader('Price', 'price')}
-              {sortableHeader('Value', 'value')}
+              {sortableHeader('Avg Price', 'avg_cost')}
+              {sortableHeader('Mkt Value', 'market_value')}
+              {sortableHeader('Unrealized', 'unrealized')}
+              {/* Value column is commented out while we prefer showing market and unrealized totals */}
+              {/** {sortableHeader('Value', 'value')} */}
             </tr>
           </thead>
           <tbody className="bg-gray-800/40 divide-y divide-gray-700/60">
@@ -421,14 +454,18 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
                     </select>
                   </td>
                   <td style={{ width: colWidths.quantity }} className="px-4 py-3 text-right text-gray-300 whitespace-nowrap text-sm">{h.quantity}</td>
-                  <td style={{ width: colWidths.price }} className="px-4 py-3 text-right text-gray-300 whitespace-nowrap text-sm">{h.price}</td>
-                  <td style={{ width: colWidths.value }} className="px-4 py-3 text-right text-indigo-200 font-semibold whitespace-nowrap text-sm">{h.value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td style={{ width: colWidths.avg_cost }} className="px-4 py-3 text-right text-gray-300 whitespace-nowrap text-sm">{h.avg_cost?.toLocaleString?.(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td style={{ width: colWidths.market_value }} className="px-4 py-3 text-right text-gray-300 whitespace-nowrap text-sm">{h.market_value?.toLocaleString?.(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td style={{ width: colWidths.unrealized }} className={`px-4 py-3 text-right whitespace-nowrap text-sm ${unrealizedClass(h.unrealized_pnl)}`}>{formatPl(h.unrealized_pnl)}</td>
+                  {/* Value cell commented out - we display totals separately */}
+                  {/** <td style={{ width: colWidths.value }} className="px-4 py-3 text-right text-indigo-200 font-semibold whitespace-nowrap text-sm">{h.value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td> */}
                 </tr>
               );
             })}
             <tr className="bg-gray-900/60 font-semibold">
-              <td colSpan={7} className="px-4 py-3 text-right text-gray-300 uppercase tracking-wide">Total Value</td>
-              <td style={{ width: colWidths.value }} className="px-4 py-3 text-right text-indigo-200 font-bold">{status.total_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              <td colSpan={7} className="px-4 py-3 text-right text-gray-300 uppercase tracking-wide">Totals</td>
+              <td style={{ width: colWidths.market_value }} className="px-4 py-3 text-right text-gray-300 font-medium">{status.total_market_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              <td style={{ width: colWidths.unrealized }} className={`px-4 py-3 text-right font-medium ${unrealizedClass(status.net_unrealized_pnl)}`}>{formatPl(status.net_unrealized_pnl)}</td>
             </tr>
           </tbody>
         </table>
@@ -471,7 +508,8 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
               <div className="flex items-center justify-between pt-1">
                 <div className="flex flex-col text-[11px] text-gray-400">
                   <span>Qty: <span className="text-gray-200 font-medium">{h.quantity}</span></span>
-                  <span>Price: <span className="text-gray-200 font-medium">{h.price}</span></span>
+                  <span>Avg Price: <span className="text-gray-200 font-medium">{h.avg_cost?.toLocaleString?.(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
+                  <span>Unrealized: <span className={`font-medium ${unrealizedClass(h.unrealized_pnl)}`}>{formatPl(h.unrealized_pnl)}</span></span>
                 </div>
                 <div className="text-right text-indigo-300 font-semibold text-sm">{h.value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
               </div>
@@ -479,8 +517,14 @@ const PortfolioStatusCard: React.FC<PortfolioStatusCardProps> = ({ portfolioName
           );
         })}
         <div className="m-2 mt-4 p-4 rounded-xl bg-gray-900/60 border border-gray-700/60 flex items-center justify-between">
-          <span className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Total Value</span>
-          <span className="text-indigo-300 font-bold text-sm">{status.total_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Total Market Value</div>
+            <div className="text-indigo-300 font-bold text-sm">{status.total_market_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Unrealized P/L</div>
+            <div className={`font-bold text-sm ${unrealizedClass(status.net_unrealized_pnl)}`}>{formatPl(status.net_unrealized_pnl)}</div>
+          </div>
         </div>
       </div>
     </div>

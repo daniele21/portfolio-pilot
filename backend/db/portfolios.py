@@ -26,6 +26,16 @@ def aggregate_positions(transactions: List[Dict[str, Any]]) -> Dict[str, float]:
             qty = float(t.get("quantity", 0))
         except Exception:
             qty = 0.0
+        # If transactions use an explicit 'operation' field (e.g. 'Buy'/'Sell')
+        # and the quantity is provided as a positive number for sells,
+        # interpret common sell-like operations as negative quantities.
+        try:
+            op = (t.get('operation') or '').strip().lower()
+        except Exception:
+            op = ''
+        if qty >= 0 and op:
+            if op in ('sell', 's', 'withdraw', 'withdrawal', 'out'):
+                qty = -abs(qty)
         ticker = t.get("ticker")
         if not ticker:
             continue
@@ -54,6 +64,12 @@ def save_transactions(portfolio: str, transactions: List[Dict[str, Any]], max_re
             "quantity": float(t.get("quantity", 0)),
             "price": float(t.get("price", 0)),
             "date": t.get("date"),
+            # New normalized fields from ingestion: operation (Buy/Sell/etc), description,
+            # optional identifiers: isin and yahoo_ticker. Keep `label` for backward compatibility.
+            "operation": t.get("operation"),
+            "description": t.get("description"),
+            "isin": t.get("isin"),
+            "yahoo_ticker": t.get("yahoo_ticker"),
             "label": t.get("label"),
             "name": t.get("name"),
             "created_at": firestore.SERVER_TIMESTAMP,
@@ -235,7 +251,14 @@ def delete_portfolio(portfolio_name: str) -> None:
 def save_portfolio_status(portfolio: str, status: Dict[str, Any]) -> None:
     client = _ensure_client()
     # Save total value metadata in portfolio_status collection
-    payload = {"total_value": float(status.get("total_value", 0)), "last_updated": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP}
+    # Prefer storing the explicit total_market_value when provided by the
+    # caller. Fall back to legacy total_value for compatibility.
+    payload = {
+        "total_value": float(status.get("total_value", 0)),
+        "total_market_value": float(status.get("total_market_value", status.get("total_value", 0) or 0)),
+        "last_updated": firestore.SERVER_TIMESTAMP,
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    }
     client.collection(COL_PORTFOLIO_STATUS).document(portfolio).set(payload, merge=True)
     # Save holdings as a single document under COL_PORTFOLIO_HOLDINGS with document id == portfolio
     # Merge any existing per-holding metadata (risk, category, asset_type) so a status save
@@ -256,7 +279,11 @@ def save_portfolio_status(portfolio: str, status: Dict[str, Any]) -> None:
             "name": h.get("name"),
             "quantity": float(h.get("quantity", 0)),
             "price": float(h.get("price", 0)),
-            "value": float(h.get("value", 0)),
+            # Save both market_value (preferred) and legacy 'value' for
+            # backward compatibility. If market_value is not present, use
+            # the legacy value.
+            "market_value": float(h.get("market_value", h.get("value", 0))),
+            "value": float(h.get("value", h.get("market_value", 0))),
         }
         # Merge known metadata from existing holdings (if present)
         if ticker and ticker in existing_meta_by_ticker:
@@ -350,8 +377,13 @@ def get_portfolio_status_saved(portfolio: str) -> Tuple[Dict[str, Any], Optional
                 # Use save_portfolio_status which will merge existing per-holding metadata
                 from db.portfolios import save_portfolio_status
                 save_portfolio_status(portfolio, { 'total_value': live_status.get('total_value', 0), 'holdings': live_holdings })
-                # Return the live status so callers get up-to-date values
-                return { 'total_value': live_status.get('total_value', 0), 'holdings': live_holdings }, last_updated, updated_at
+                # Return the live status so callers get up-to-date values. Prefer
+                # returning total_market_value when present in live_status.
+                return {
+                    'total_value': live_status.get('total_value', 0),
+                    'total_market_value': live_status.get('total_market_value', live_status.get('total_value', 0)),
+                    'holdings': live_holdings
+                }, last_updated, updated_at
             except Exception:
                 # If save fails, fall back to returning stored data
                 pass
@@ -359,7 +391,7 @@ def get_portfolio_status_saved(portfolio: str) -> Tuple[Dict[str, Any], Optional
         # If live computation fails, ignore and return stored data
         pass
 
-    return {"total_value": data.get("total_value", 0), "holdings": holdings}, last_updated, updated_at
+    return {"total_value": data.get("total_value", 0), "total_market_value": data.get("total_market_value", data.get("total_value", 0)), "holdings": holdings}, last_updated, updated_at
 
 
 def save_holdings_metadata(portfolio: str, metadata_map: Dict[str, Dict[str, Any]]) -> None:
@@ -391,7 +423,9 @@ def save_holdings_metadata(portfolio: str, metadata_map: Dict[str, Dict[str, Any
                     'name': h.get('name'),
                     'quantity': float(h.get('quantity', 0) or 0),
                     'price': float(h.get('price', 0) or 0),
-                    'value': float(h.get('value', 0) or 0),
+                            # prefer market_value when present
+                            'market_value': float(h.get('market_value', h.get('value', 0)) or 0),
+                            'value': float(h.get('value', h.get('market_value', 0)) or 0),
                 }
     except Exception:
         live_holdings_map = {}
@@ -471,48 +505,6 @@ def save_portfolio_targets(portfolio: str, mode: str, targets: Dict[str, float])
     doc_ref.set(payload, merge=True)
 
 
-def migrate_from_sqlite(sqlite_path: str = "ticker_data.db") -> None:
-    """Migrate legacy SQLite data (tickers and transactions) into Firestore.
-
-    This is a best-effort importer. Run on a copy of the sqlite db if you
-    want to be safe. It writes into the `tickers_raw` and `transactions`
-    collections.
-    """
-    import sqlite3
-    if not os.path.exists(sqlite_path):
-        print(f"No sqlite db at {sqlite_path} found. Skipping migration.")
-        return
-    client = _ensure_client()
-    conn = sqlite3.connect(sqlite_path)
-    cursor = conn.cursor()
-    # Migrate tickers
-    try:
-        cursor.execute('SELECT ticker, data, last_updated FROM tickers')
-        for ticker, data_json, last_updated in cursor.fetchall():
-            try:
-                data = json.loads(data_json) if data_json else None
-            except Exception:
-                data = None
-            payload = {"data": data, "last_updated": last_updated}
-            client.collection(COL_TICKERS).document(ticker).set(payload)
-    except Exception:
-        pass
-    # Migrate transactions
-    try:
-        cursor.execute('SELECT id, portfolio, ticker, quantity, price, date, label, name FROM transactions')
-        for row in cursor.fetchall():
-            tid, portfolio, ticker, quantity, price, date, label, name = row
-            payload = {"portfolio": portfolio, "ticker": ticker, "quantity": quantity, "price": price, "date": date, "label": label, "name": name}
-            client.collection(COL_TRANSACTIONS).document(str(tid)).set(payload)
-    except Exception:
-        pass
-    conn.close()
-    print("Migration to Firestore attempted. Verify data in Firestore console.")
-
-# --------- USER-SCOPED (multi-tenant) VARIANTS ---------
-# These wrap the legacy functions but route storage through users/{uid}/<collection>
-# for new multi-tenant architecture. They intentionally keep identical return
-# types so API layers can switch over gradually.
 
 def create_portfolio_user(uid: str, name: str) -> None:
     client = _ensure_client()
@@ -535,6 +527,11 @@ def save_transactions_user(uid: str, portfolio: str, transactions: List[Dict[str
             "quantity": float(t.get("quantity", 0)),
             "price": float(t.get("price", 0)),
             "date": t.get("date"),
+            # New normalized fields from ingestion: operation, description, isin, yahoo_ticker
+            "operation": t.get("operation"),
+            "description": t.get("description"),
+            "isin": t.get("isin"),
+            "yahoo_ticker": t.get("yahoo_ticker"),
             "label": t.get("label"),
             "name": t.get("name"),
             "created_at": firestore.SERVER_TIMESTAMP,
@@ -636,7 +633,12 @@ def delete_portfolio_user(uid: str, portfolio_name: str) -> None:
 
 def save_portfolio_status_user(uid: str, portfolio: str, status: Dict[str, Any]) -> None:
     client = _ensure_client()
-    payload = {"total_value": float(status.get("total_value", 0)), "last_updated": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP}
+    payload = {
+        "total_value": float(status.get("total_value", 0)),
+        "total_market_value": float(status.get("total_market_value", status.get("total_value", 0) or 0)),
+        "last_updated": firestore.SERVER_TIMESTAMP,
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    }
     user_collection(client, uid, COL_PORTFOLIO_STATUS).document(portfolio).set(payload, merge=True)
     # holdings doc
     doc_ref = user_collection(client, uid, COL_PORTFOLIO_HOLDINGS).document(portfolio)
@@ -653,7 +655,8 @@ def save_portfolio_status_user(uid: str, portfolio: str, status: Dict[str, Any])
             "name": h.get("name"),
             "quantity": float(h.get("quantity", 0)),
             "price": float(h.get("price", 0)),
-            "value": float(h.get("value", 0)),
+            "market_value": float(h.get("market_value", h.get("value", 0))),
+            "value": float(h.get("value", h.get("market_value", 0))),
         }
         if ticker and ticker in existing_meta_by_ticker:
             existing_entry = existing_meta_by_ticker.get(ticker) or {}
@@ -688,7 +691,7 @@ def get_portfolio_status_saved_user(uid: str, portfolio: str) -> Tuple[Dict[str,
             holdings.append({"ticker": ticker, "name": name, "quantity": qty, "price": price, "value": value})
         save_portfolio_status_user(uid, portfolio, {"total_value": total_value, "holdings": holdings})
         now = datetime.now()
-        return {"total_value": total_value, "holdings": holdings}, now, now
+    return {"total_value": total_value, "total_market_value": total_value, "holdings": holdings}, now, now
     data = doc.to_dict() or {}
     last_updated = data.get("last_updated") if isinstance(data.get("last_updated"), datetime) else None
     updated_at = data.get("updated_at") if isinstance(data.get("updated_at"), datetime) else None
@@ -734,14 +737,14 @@ def get_portfolio_status_saved_user(uid: str, portfolio: str) -> Tuple[Dict[str,
         if need_save:
             try:
                 from db.portfolios import save_portfolio_status_user
-                save_portfolio_status_user(uid, portfolio, { 'total_value': live_status.get('total_value', 0), 'holdings': live_holdings })
-                return { 'total_value': live_status.get('total_value', 0), 'holdings': live_holdings }, last_updated, updated_at
+                save_portfolio_status_user(uid, portfolio, { 'total_value': live_status.get('total_value', 0), 'total_market_value': live_status.get('total_market_value', live_status.get('total_value', 0)), 'holdings': live_holdings })
+                return { 'total_value': live_status.get('total_value', 0), 'total_market_value': live_status.get('total_market_value', live_status.get('total_value', 0)), 'holdings': live_holdings }, last_updated, updated_at
             except Exception:
                 pass
     except Exception:
         pass
 
-    return {"total_value": data.get("total_value", 0), "holdings": holdings}, last_updated, updated_at
+    return {"total_value": data.get("total_value", 0), "total_market_value": data.get("total_market_value", data.get("total_value", 0)), "holdings": holdings}, last_updated, updated_at
 
 
 def save_holdings_metadata_user(uid: str, portfolio: str, metadata_map: Dict[str, Dict[str, Any]]) -> None:

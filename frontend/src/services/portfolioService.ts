@@ -1,4 +1,4 @@
-import type { Kpi, Asset, PortfolioData, StandardizedMovement, HistoricalDataPoint, ProcessMovementsResult, PortfolioStatusResponse, PortfolioPerformanceResponse, PortfolioHolding, BackendIngestTransactionsResponse } from '../types';
+import type { Kpi, Asset, PortfolioData, StandardizedMovement, HistoricalDataPoint, ProcessMovementsResult, PortfolioStatusResponse, PortfolioPerformanceResponse, PortfolioHolding } from '../types';
 import { TrafficLightStatus } from '../types';
 import { MOCK_KPIS_DATA } from '../constants';
 import { fetchTickerDetails } from './marketDataService';
@@ -68,7 +68,9 @@ export const fetchPortfolioStatus = async (portfolioName: string): Promise<Portf
   if (raw.status && (Array.isArray(raw.status.holdings) || raw.status.total_value !== undefined)) {
     normalized = {
       holdings: Array.isArray(raw.status.holdings) ? raw.status.holdings : [],
+      // preserve legacy total_value while preferring total_market_value
       total_value: raw.status.total_value ?? 0,
+      total_market_value: raw.status.total_market_value ?? raw.status.total_value ?? 0,
       last_updated: raw.last_updated ?? raw.status.last_updated ?? undefined
     };
   } else {
@@ -94,6 +96,7 @@ export const fetchPortfolioStatusLive = async (portfolioName: string): Promise<P
     normalized = {
       holdings: Array.isArray(raw.status.holdings) ? raw.status.holdings : [],
       total_value: raw.status.total_value ?? 0,
+      total_market_value: raw.status.total_market_value ?? raw.status.total_value ?? 0,
       last_updated: raw.last_updated ?? raw.status.last_updated ?? undefined
     };
   } else {
@@ -148,7 +151,8 @@ export const getAssets = async (portfolioName: string): Promise<Asset[]> => {
       symbol: holding.ticker,
       name: info?.shortName || holding.ticker,
       quantity: holding.quantity,
-      value: holding.value,
+      // prefer market_value when available
+      value: (holding.market_value ?? holding.value) as number,
       averageCostPrice: null,
       category: info?.sector || 'Unknown',
       region: info?.country ? (info.country === 'United States' ? 'North America' : info.country) : 'Unknown',
@@ -182,7 +186,8 @@ export const getKpis = async (portfolioName: string): Promise<Kpi[]> => {
     });
     return kpisOutput;
   }
-  const totalPortfolioValue = status.total_value || 0;
+  // prefer market total when available
+  const totalPortfolioValue = status.total_market_value ?? status.total_value ?? 0;
   const cashHolding = status.holdings.find(h => h.ticker.match(/^(USD|EUR|GBP|CASH)/i));
   kpisOutput.forEach(kpi => {
     if (kpi.id === 'totalPortfolioValue') {
@@ -195,7 +200,8 @@ export const getKpis = async (portfolioName: string): Promise<Kpi[]> => {
       kpi.description = "Profit/Loss calculation requires transaction history with cost basis, not fully available from current backend summary.";
     } else if (kpi.id === 'cashBuffer') {
       if(cashHolding) {
-        kpi.value = cashHolding.value;
+          // prefer market_value for cash-holding display
+          kpi.value = cashHolding.market_value ?? cashHolding.value;
         kpi.unit = cashHolding.ticker.split(/[-_]/)[0] || 'USD';
         kpi.status = cashHolding.value > 10000 ? TrafficLightStatus.GREEN : cashHolding.value > 5000 ? TrafficLightStatus.AMBER : TrafficLightStatus.RED;
       } else {
@@ -230,8 +236,32 @@ export const getPortfolioData = async (portfolioName: string): Promise<Portfolio
 
 export const getPortfolioHistory = async (): Promise<HistoricalDataPoint[]> => {
   const history = await commonPortfolioFetch<PortfolioPerformanceResponse>('performance', DEFAULT_PORTFOLIO_ID);
-   _isInitialized = true; // Mark as initialized even if empty
-  return history || [];
+  _isInitialized = true; // Mark as initialized even if empty
+  if (!history || !Array.isArray(history)) return [];
+  // Backend now returns per-day objects with fields like:
+  //  { date, total_value, total_market_value, net_unrealised_pnl, pct }
+  // Normalize into HistoricalDataPoint expected by the app: { date, value, abs_value, pct }
+  try {
+    const normalized: HistoricalDataPoint[] = history.map((h: any) => ({
+      date: h.date,
+      // 'value' in the app is net value (market - cost basis)
+      value: Number(h.net_unrealised_pnl ?? h.net_unrealized_pnl ?? h.value ?? 0) || 0,
+      abs_value: Number(h.total_market_value ?? h.abs_value ?? 0) || 0,
+  pct: Number(h.pct ?? 0) || 0,
+  // realized P&L (backend may provide either spelling)
+  realized: Number(h.realized_pnl ?? h.realised_pnl ?? 0) || 0,
+  // pct_from_first removed - calculated client-side when needed
+      // Backend fields for compatibility
+      total_value: Number(h.total_value ?? 0) || 0,
+      total_market_value: Number(h.total_market_value ?? h.abs_value ?? 0) || 0,
+      net_unrealised_pnl: Number(h.net_unrealised_pnl ?? h.net_unrealized_pnl ?? 0) || 0,
+      net_unrealized_pnl: Number(h.net_unrealized_pnl ?? h.net_unrealised_pnl ?? 0) || 0,
+    }));
+    return normalized;
+  } catch (e) {
+    console.error('Failed to normalize portfolio performance payload', e, history);
+    return [];
+  }
 };
 
 // Fetch Gemini-backed daily risk analysis for a portfolio
@@ -257,61 +287,101 @@ export const processAndApplyMovements = async (fileContent: string): Promise<Pro
   const apiUrl = `${cleanApiBaseUrl}/api/transactions/standardize-and-save`;
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  else {
-    return { success: false, message: "User not authenticated. Cannot process transactions.", movementsProcessed: 0, movementsSkipped: 0, notes: ["User not authenticated."] };
+  if (!idToken) {
+    return { success: false, message: 'User not authenticated. Cannot process transactions.', movementsProcessed: 0, movementsSkipped: 0, notes: ['User not authenticated.'], successfullyProcessedMovements: [] };
   }
 
-  console.log(`[PortfolioService] POST ${apiUrl}`, { raw: fileContent });
   try {
-    const { ok, data: backendResponse } = await apiFetch<any>(apiUrl, { method: 'POST', headers, body: JSON.stringify({ raw: fileContent }) });
-    if (!ok || backendResponse?.status !== 'saved') {
+    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'POST', headers, body: JSON.stringify({ raw: fileContent }) });
+    if (!ok || !data) {
       return {
         success: false,
-        message: backendResponse?.message || backendResponse?.error || 'Failed to process movements',
-        error: backendResponse?.error,
-        movementsProcessed: backendResponse?.count || 0,
+        message: data?.message || data?.error || 'Failed to process movements',
+        error: data?.error,
+        movementsProcessed: data?.count || 0,
         movementsSkipped: 0,
-        notes: backendResponse?.notes || [],
-        successfullyProcessedMovements: backendResponse?.transactions || []
-      };
+        notes: data?.notes || [],
+        successfullyProcessedMovements: data?.transactions || []
+      } as ProcessMovementsResult;
     }
 
     // Update local log with standardized transactions if present
-  localAppliedMovementsLog = backendResponse.transactions || [];
+    localAppliedMovementsLog = data.transactions || [];
     _isInitialized = false; // Force re-fetch on next access
 
     return {
       success: true,
-      message: `Successfully processed and saved ${backendResponse.count || 0} transactions.`,
-      movementsProcessed: backendResponse.count || 0,
+      message: `Successfully processed and saved ${data.count || 0} transactions.`,
+      movementsProcessed: data.count || 0,
       movementsSkipped: 0,
-      notes: [],
-      successfullyProcessedMovements: backendResponse.transactions || []
-    };
+      notes: data.notes || [],
+      successfullyProcessedMovements: data.transactions || []
+    } as ProcessMovementsResult;
   } catch (error) {
-    console.error("Error posting movements to backend for standardization:", error);
+    console.error('Error posting movements to backend for standardization:', error);
     return {
       success: false,
       message: error instanceof Error ? error.message : String(error),
       movementsProcessed: 0,
       movementsSkipped: 0,
-      notes: ["Error posting movements to backend."],
+      notes: ['Error posting movements to backend.'],
       successfullyProcessedMovements: []
-    };
+    } as ProcessMovementsResult;
   }
 };
 
 // New: ingest transactions via new backend endpoint (files or raw)
-export const ingestTransactions = async (portfolioName: string, files: File[], rawText: string | null): Promise<BackendIngestTransactionsResponse> => {
+// export const ingestTransactions = async (portfolioName: string, files: File[], rawText: string | null): Promise<BackendIngestTransactionsResponse> => {
+//   // DEPRECATED: prefer `ingestTransactionsWithResolution` which provides a
+//   // human-in-the-loop suggestion flow for ambiguous ticker lookups. This
+//   // legacy function remains for compatibility but new UI code should call
+//   // `ingestTransactionsWithResolution` instead.
+//   console.warn('DEPRECATED: ingestTransactions is deprecated. Use ingestTransactionsWithResolution for interactive ingestion.');
+//   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+//   const endpoint = `${cleanApiBaseUrl}/api/transactions/ingest/${encodeURIComponent(portfolioName)}`;
+//   const idToken = getAuthIdToken();
+//   if (!idToken) return { status: 'error', message: 'Not authenticated' };
+//   try {
+//     let data: any = null;
+//     if (files.length > 0) {
+//       // Use authFetch directly for multipart form upload so we don't force JSON content-type
+//       const form = new FormData();
+//       files.forEach(f => form.append('file', f, f.name));
+//       const resp = await authFetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${idToken}` }, body: form });
+//       data = await resp.json().catch(() => null);
+//       if (!resp.ok) return { status: data?.status || 'error', message: data?.error || data?.message || 'Ingestion failed', error: data?.error };
+//     } else if (rawText) {
+//       const { ok, data: respData } = await apiFetch<any>(endpoint, { method: 'POST', idToken, body: JSON.stringify({ raw: rawText }) });
+//       data = respData;
+//       if (!ok) return { status: data?.status || 'error', message: data?.error || data?.message || 'Ingestion failed', error: data?.error };
+//     } else {
+//       return { status: 'error', message: 'No files or raw text provided' };
+//     }
+//     // On successful ingestion, invalidate relevant caches so UI reloads fresh data
+//     try {
+//       await idbDel('portfolio_names');
+//       await idbDel(`status:${portfolioName}`);
+//       await idbDel(`status_live:${portfolioName}`);
+//     } catch {
+//       // ignore cache errors
+//     }
+//     return data as BackendIngestTransactionsResponse;
+//   } catch (e) {
+//     return { status: 'error', message: e instanceof Error ? e.message : String(e) };
+//   }
+// };
+
+// New: ingest transactions with human-in-the-loop ticker resolution
+export const ingestTransactionsWithResolution = async (portfolioName: string, files: File[], rawText: string | null): Promise<any> => {
   const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const endpoint = `${cleanApiBaseUrl}/api/transactions/ingest/${encodeURIComponent(portfolioName)}`;
+  const endpoint = `${cleanApiBaseUrl}/api/transactions/ingest-with-resolution/${encodeURIComponent(portfolioName)}`;
   const idToken = getAuthIdToken();
   if (!idToken) return { status: 'error', message: 'Not authenticated' };
+  
   try {
     let data: any = null;
     if (files.length > 0) {
-      // Use authFetch directly for multipart form upload so we don't force JSON content-type
+      // Use authFetch directly for multipart form upload
       const form = new FormData();
       files.forEach(f => form.append('file', f, f.name));
       const resp = await authFetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${idToken}` }, body: form });
@@ -324,7 +394,8 @@ export const ingestTransactions = async (portfolioName: string, files: File[], r
     } else {
       return { status: 'error', message: 'No files or raw text provided' };
     }
-    // On successful ingestion, invalidate relevant caches so UI reloads fresh data
+    
+    // Clear caches on successful request (whether saved or pending)
     try {
       await idbDel('portfolio_names');
       await idbDel(`status:${portfolioName}`);
@@ -332,7 +403,50 @@ export const ingestTransactions = async (portfolioName: string, files: File[], r
     } catch {
       // ignore cache errors
     }
-    return data as BackendIngestTransactionsResponse;
+    
+    return data;
+  } catch (e) {
+    return { status: 'error', message: e instanceof Error ? e.message : String(e) };
+  }
+};
+
+// Resolve ticker choices and complete transaction saving
+export const resolveTickerChoices = async (
+  portfolioName: string, 
+  tickerResolutions: Array<{original_ticker: string, chosen_symbol: string}>,
+  resolvedTransactions: any[] = [],
+  allTransactions: any[] = []
+): Promise<any> => {
+  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  const endpoint = `${cleanApiBaseUrl}/api/transactions/resolve-ticker/${encodeURIComponent(portfolioName)}`;
+  const idToken = getAuthIdToken();
+  if (!idToken) return { status: 'error', message: 'Not authenticated' };
+  
+  try {
+    const { ok, data } = await apiFetch<any>(endpoint, {
+      method: 'POST',
+      idToken,
+      body: JSON.stringify({
+        ticker_resolutions: tickerResolutions,
+        resolved_transactions: resolvedTransactions,
+        all_transactions: allTransactions
+      })
+    });
+    
+    if (!ok) {
+      return { status: data?.status || 'error', message: data?.error || data?.message || 'Resolution failed', error: data?.error };
+    }
+    
+    // Clear caches on successful save
+    try {
+      await idbDel('portfolio_names');
+      await idbDel(`status:${portfolioName}`);
+      await idbDel(`status_live:${portfolioName}`);
+    } catch {
+      // ignore cache errors
+    }
+    
+    return data;
   } catch (e) {
     return { status: 'error', message: e instanceof Error ? e.message : String(e) };
   }
@@ -436,7 +550,29 @@ export const fetchPortfolioPerformance = async (portfolioName: string): Promise<
   try {
     const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
     if (!ok || !data) return [];
-    return Array.isArray(data) ? data : [];
+    if (!Array.isArray(data)) return [];
+    try {
+      return data.map((h: any) => ({
+        date: h.date,
+        value: Number(h.net_unrealised_pnl ?? h.net_unrealized_pnl ?? h.value ?? 0) || 0,
+        abs_value: Number(h.total_market_value ?? h.abs_value ?? 0) || 0,
+        pct: Number(h.pct ?? 0) || 0,
+        // New TWR-compatible backend fields (optional)
+        cash: Number(h.cash ?? 0) || 0,
+        equity: Number(h.equity ?? 0) || 0,
+        twr_daily_pct: Number(h.twr_daily_pct ?? 0) || 0,
+        twr_cum_pct: Number(h.twr_cum_pct ?? 0) || 0,
+        // pct_from_first removed - calculated client-side when needed
+        // Backend fields for compatibility
+        total_value: Number(h.total_value ?? 0) || 0,
+        total_market_value: Number(h.total_market_value ?? h.abs_value ?? 0) || 0,
+        net_unrealised_pnl: Number(h.net_unrealised_pnl ?? h.net_unrealized_pnl ?? 0) || 0,
+        net_unrealized_pnl: Number(h.net_unrealized_pnl ?? h.net_unrealised_pnl ?? 0) || 0,
+      }));
+    } catch (e) {
+      console.error('Failed to normalize performance payload', e, data);
+      return [];
+    }
   } catch (e) {
     return [];
   }

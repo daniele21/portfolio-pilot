@@ -37,10 +37,22 @@ const FinancePerformanceChart: React.FC<FinancePerformanceChartProps> = ({
   const chartSeries = React.useMemo(() => {
     return series.map(s => ({
       ...s,
-      data: s.data.map(point => ({
-        time: point.date,
-        value: point[valueType] || point.value || 0
-      }))
+      data: s.data.map(point => {
+        if (valueType === 'performance') {
+          const realized = Number(point.realized ?? point.realised ?? 0) || 0;
+          const unreal = Number(point.net_unrealised_pnl ?? point.net_unrealized_pnl ?? point.value ?? 0) || 0;
+          const spent = Number(point.total_cost_spent ?? 0) || 0;
+          const pct = spent > 1e-9 ? ((realized + unreal) / spent * 100.0) : 0.0;
+          return { time: point.date, value: pct };
+        } else if (valueType === 'pct') {
+          // For 'pct' valueType, compute net unrealized percentage: net_unrealized / total_cost_spent
+          const netUnrealized = Number(point.net_unrealised_pnl ?? point.net_unrealized_pnl ?? point.value ?? 0) || 0;
+          const spent = Number(point.total_cost_spent ?? 0) || 0;
+          const pct = spent > 1e-9 ? (netUnrealized / spent * 100.0) : 0.0;
+          return { time: point.date, value: pct };
+        }
+        return { time: point.date, value: point[valueType] ?? point.value ?? 0 };
+      })
     }));
   }, [series, valueType]);
 
@@ -48,7 +60,7 @@ const FinancePerformanceChart: React.FC<FinancePerformanceChartProps> = ({
     { label: 'Absolute', value: 'abs_value' },
     { label: 'Net Value', value: 'value' },
     { label: 'Percentage', value: 'pct' },
-    { label: '% from Start', value: 'pct_from_first' }
+    { label: '% from Start', value: 'performance' }
   ];
 
   return (
@@ -74,11 +86,11 @@ const FinancePerformanceChart: React.FC<FinancePerformanceChartProps> = ({
       <Card.Section p="md" withBorder>
         <Group justify="space-between" align="center">
           <Group gap="sm">
-            <DatePickerInput
+              <DatePickerInput
               type="range"
               placeholder="Select date range"
               value={dateRange ? [new Date(dateRange.start), new Date(dateRange.end)] : [null, null]}
-              onChange={(dates) => {
+              onChange={(dates: [Date | null, Date | null]) => {
                 if (dates[0] && dates[1]) {
                   onDateRangeChange({
                     start: dates[0].toISOString().split('T')[0],
@@ -118,11 +130,12 @@ const FinancePerformanceChart: React.FC<FinancePerformanceChartProps> = ({
             <Text c="dimmed">Loading chart data...</Text>
           </div>
         ) : (
-          <TimeSeriesChart 
+            <TimeSeriesChart 
             series={chartSeries}
             height={300}
+            // Values are already percent when valueType === 'performance'
             valueFormatter={(value) => {
-              if (valueType === 'pct' || valueType === 'pct_from_first') {
+              if (valueType === 'pct' || valueType === 'performance') {
                 return `${value.toFixed(2)}%`;
               }
               return value.toLocaleString(undefined, { 
@@ -130,6 +143,8 @@ const FinancePerformanceChart: React.FC<FinancePerformanceChartProps> = ({
                 maximumFractionDigits: 2 
               });
             }}
+            normalizeToZero={false}
+            normalizeToPercent={false}
           />
         )}
       </Card.Section>

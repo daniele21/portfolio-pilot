@@ -99,10 +99,10 @@ const CollapsibleTransactionsSection: React.FC<{
     const rows: React.ReactNode[] = [];
   if (groupBy === 'asset') {
       for (const group of groups) {
-        rows.push(
-          <React.Fragment key={`group-${group.key}`}>
-            <tr className="bg-gray-850">
-              <td colSpan={8} className="px-4 py-2 text-sm text-gray-200 font-medium">
+          rows.push(
+            <React.Fragment key={`group-${group.key}`}>
+              <tr className="bg-gray-850">
+                <td colSpan={10} className="px-4 py-2 text-sm text-gray-200 font-medium">
                 <div
                   role="button"
                   tabIndex={0}
@@ -123,8 +123,9 @@ const CollapsibleTransactionsSection: React.FC<{
         </React.Fragment>
         );
         if (!collapsedGroups[group.key]) {
-          group.items.forEach((mov: any, index: number) => {
-            const rawType = typeof mov.type === 'string' ? mov.type : (typeof (mov as any).label === 'string' ? (mov as any).label : null);
+            group.items.forEach((mov: any, index: number) => {
+            // Prefer normalized `operation` (Buy/Sell/etc), then legacy `type`, then `label`.
+            const rawType = typeof mov.operation === 'string' ? mov.operation : (typeof mov.type === 'string' ? mov.type : (typeof (mov as any).label === 'string' ? (mov as any).label : null));
             const isSell = rawType && rawType.toLowerCase() === 'sell';
             const { id, portfolio } = getTransactionIdAndPortfolio(mov);
             const isPendingDelete = pendingDeletes.some(d => d.id === (id || `row-${index}`) && d.portfolio === (portfolio || 'Imported'));
@@ -140,7 +141,9 @@ const CollapsibleTransactionsSection: React.FC<{
                   return formatted.charAt(0).toUpperCase() + formatted.slice(1);
                 })()}</td>
                 <td className={`px-4 py-3 whitespace-nowrap text-sm font-medium text-white max-w-[160px] truncate${isPendingDelete ? ' line-through opacity-50' : ''}`} title={mov.name}>{mov.name || 'N/A'}</td>
-                <td className={`px-4 py-3 whitespace-nowrap text-sm font-semibold text-indigo-200 tracking-wide${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.assetSymbol || mov.ticker || 'N/A'}</td>
+                <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.description || '-'}</td>
+                <td className={`px-4 py-3 whitespace-nowrap text-sm font-semibold text-indigo-200 tracking-wide${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.yahoo_ticker || 'N/A'}</td>
+                {/* <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.isin || '-'}</td> */}
                 <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300 text-right${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.quantity != null ? mov.quantity.toLocaleString() : '-'}</td>
                 <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300 text-right${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.price != null ? mov.price.toLocaleString(undefined,{ minimumFractionDigits: 2, maximumFractionDigits: 4 }) : '-'}</td>
                 <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300 text-right${isPendingDelete ? ' line-through opacity-50' : ''}`}>{(typeof mov.quantity === 'number' && typeof mov.price === 'number') ? (mov.quantity * mov.price).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 }) : '-'}</td>
@@ -184,12 +187,12 @@ const CollapsibleTransactionsSection: React.FC<{
     } else {
       // flat rows
       filteredMovements.forEach((mov: any, index: number) => {
-        const rawType = typeof mov.type === 'string' ? mov.type : (typeof (mov as any).label === 'string' ? (mov as any).label : null);
+        const rawType = typeof mov.operation === 'string' ? mov.operation : (typeof mov.type === 'string' ? mov.type : (typeof (mov as any).label === 'string' ? (mov as any).label : null));
         const isSell = rawType && rawType.toLowerCase() === 'sell';
         const { id, portfolio } = getTransactionIdAndPortfolio(mov);
         const isPendingDelete = pendingDeletes.some(d => d.id === (id || `row-${index}`) && d.portfolio === (portfolio || 'Imported'));
         rows.push(
-          <tr
+            <tr
             key={id || `row-${index}`}
             className={`hover:bg-gray-750 transition-colors${isSell ? ' bg-red-900/60' : ''}${isPendingDelete ? ' bg-yellow-900/40' : ''}`}
           >
@@ -200,7 +203,9 @@ const CollapsibleTransactionsSection: React.FC<{
               return formatted.charAt(0).toUpperCase() + formatted.slice(1);
             })()}</td>
             <td className={`px-4 py-3 whitespace-nowrap text-sm font-medium text-white max-w-[160px] truncate${isPendingDelete ? ' line-through opacity-50' : ''}`} title={mov.name}>{mov.name || 'N/A'}</td>
+            <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.description || '-'}</td>
             <td className={`px-4 py-3 whitespace-nowrap text-sm font-semibold text-indigo-200 tracking-wide${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.assetSymbol || mov.ticker || 'N/A'}</td>
+            {/* <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.isin || '-'}</td> */}
             <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300 text-right${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.quantity != null ? mov.quantity.toLocaleString() : '-'}</td>
             <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300 text-right${isPendingDelete ? ' line-through opacity-50' : ''}`}>{mov.price != null ? mov.price.toLocaleString(undefined,{ minimumFractionDigits: 2, maximumFractionDigits: 4 }) : '-'}</td>
             <td className={`px-4 py-3 whitespace-nowrap text-sm text-gray-300 text-right${isPendingDelete ? ' line-through opacity-50' : ''}`}>{(typeof mov.quantity === 'number' && typeof mov.price === 'number') ? (mov.quantity * mov.price).toLocaleString(undefined,{ minimumFractionDigits:2, maximumFractionDigits:2 }) : '-'}</td>
@@ -304,7 +309,7 @@ const CollapsibleTransactionsSection: React.FC<{
                         {!isGrpCollapsed && (
                           <div className="divide-y divide-gray-800 rounded-lg">
                             {group.items.map((mov: any, idx: number) => {
-                              const rawType = typeof mov.type === 'string' ? mov.type : (typeof (mov as any).label === 'string' ? (mov as any).label : null);
+                              const rawType = typeof mov.operation === 'string' ? mov.operation : (typeof mov.type === 'string' ? mov.type : (typeof (mov as any).label === 'string' ? (mov as any).label : null));
                               const isSell = rawType && rawType.toLowerCase() === 'sell';
                               const { id, portfolio } = getTransactionIdAndPortfolio(mov);
                               const isPendingDelete = pendingDeletes.some(d => d.id === (id || `row-${idx}`) && d.portfolio === (portfolio || 'Imported'));
@@ -319,6 +324,9 @@ const CollapsibleTransactionsSection: React.FC<{
                                     <div className="flex flex-col">
                                       <span className="text-sm font-semibold text-white tracking-wide">{mov.assetSymbol || mov.ticker}</span>
                                       <span className="text-[11px] text-gray-400 truncate max-w-[160px]" title={mov.name}>{mov.name || '—'}</span>
+                                      {mov.description ? (
+                                        <span className="text-[11px] text-gray-400 truncate max-w-[160px] mt-1" title={mov.description}>{mov.description}</span>
+                                      ) : null}
                                     </div>
                                     <div className="text-right">
                                       <span className="block text-sm text-gray-200">Qty: {mov.quantity ?? '-'}</span>
@@ -351,7 +359,7 @@ const CollapsibleTransactionsSection: React.FC<{
                 ) : (
                   // No grouping: render flat list
                   filteredMovements.map((mov: any, idx: number) => {
-                    const rawType = typeof mov.type === 'string' ? mov.type : (typeof (mov as any).label === 'string' ? (mov as any).label : null);
+                    const rawType = typeof mov.operation === 'string' ? mov.operation : (typeof mov.type === 'string' ? mov.type : (typeof (mov as any).label === 'string' ? (mov as any).label : null));
                     const isSell = rawType && rawType.toLowerCase() === 'sell';
                     const { id, portfolio } = getTransactionIdAndPortfolio(mov);
                     const isPendingDelete = pendingDeletes.some(d => d.id === (id || `row-${idx}`) && d.portfolio === (portfolio || 'Imported'));
@@ -398,9 +406,11 @@ const CollapsibleTransactionsSection: React.FC<{
                     <tr>
                       {[
                         { label: 'Date', key: 'date' },
-                        { label: 'Type', key: 'type' },
+                        { label: 'Operation', key: 'type' },
                         { label: 'Asset Name', key: 'assetName' },
+                        { label: 'Description', key: 'description' },
                         { label: 'Ticker', key: 'ticker' },
+                        // { label: 'ISIN', key: 'isin' },
                         { label: 'Qty', key: 'quantity' },
                         { label: 'Price', key: 'price' },
                         { label: 'Amount', key: 'amount' },

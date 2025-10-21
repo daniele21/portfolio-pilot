@@ -42,37 +42,37 @@ def create_app():
     init_db()
     CACHE_DURATION = timedelta(hours=24)
 
-    @app.route('/api/ticker/<string:ticker_symbol>', methods=['GET'])
-    @require_google_token()
-    def get_ticker(ticker_symbol):
-        ticker_symbol = ticker_symbol.upper()
-        update = request.args.get('update', 'true').lower() == 'true'
-        cached_data, last_updated = get_ticker_data(ticker_symbol)
-        data_is_stale = True
-        if cached_data and last_updated:
-            try:
-                # Coerce both times to UTC-aware datetimes before subtracting.
-                # Some stored timestamps may be timezone-aware (have tzinfo),
-                # others may be naive (no tzinfo). Treat naive as UTC.
-                if last_updated.tzinfo is None:
-                    last_updated_utc = last_updated.replace(tzinfo=timezone.utc)
-                else:
-                    last_updated_utc = last_updated.astimezone(timezone.utc)
-                now_utc = datetime.now(timezone.utc)
-                if now_utc - last_updated_utc <= CACHE_DURATION:
-                    data_is_stale = False
-            except Exception:
-                data_is_stale = True
-        if update or data_is_stale:
-            data, _ = fetch_with_cache(ticker_symbol, CACHE_DURATION)
-            if data:
-                save_ticker_data(ticker_symbol, data)
-        cached_data, _ = get_ticker_data(ticker_symbol)
-        if not cached_data:
-            return jsonify({'error': f'No info found for ticker {ticker_symbol}'}), 404
-        info = cached_data.get('info') or {}
-        history = get_ticker_history(ticker_symbol)
-        return jsonify({'source': 'db', 'ticker': ticker_symbol, 'data': {'info': info, 'history': history}})
+    # @app.route('/api/ticker/<string:ticker_symbol>', methods=['GET'])
+    # @require_google_token()
+    # def get_ticker(ticker_symbol):
+    #     ticker_symbol = ticker_symbol.upper()
+    #     update = request.args.get('update', 'true').lower() == 'true'
+    #     cached_data, last_updated = get_ticker_data(ticker_symbol)
+    #     data_is_stale = True
+    #     if cached_data and last_updated:
+    #         try:
+    #             # Coerce both times to UTC-aware datetimes before subtracting.
+    #             # Some stored timestamps may be timezone-aware (have tzinfo),
+    #             # others may be naive (no tzinfo). Treat naive as UTC.
+    #             if last_updated.tzinfo is None:
+    #                 last_updated_utc = last_updated.replace(tzinfo=timezone.utc)
+    #             else:
+    #                 last_updated_utc = last_updated.astimezone(timezone.utc)
+    #             now_utc = datetime.now(timezone.utc)
+    #             if now_utc - last_updated_utc <= CACHE_DURATION:
+    #                 data_is_stale = False
+    #         except Exception:
+    #             data_is_stale = True
+    #     if update or data_is_stale:
+    #         data, _ = fetch_with_cache(ticker_symbol, CACHE_DURATION)
+    #         if data:
+    #             save_ticker_data(ticker_symbol, data)
+    #     cached_data, _ = get_ticker_data(ticker_symbol)
+    #     if not cached_data:
+    #         return jsonify({'error': f'No info found for ticker {ticker_symbol}'}), 404
+    #     info = cached_data.get('info') or {}
+    #     history = get_ticker_history(ticker_symbol)
+    #     return jsonify({'source': 'db', 'ticker': ticker_symbol, 'data': {'info': info, 'history': history}})
 
     # Register blueprint(s)
     try:

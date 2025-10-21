@@ -24,6 +24,7 @@ import GoogleSignIn from './components/GoogleSignIn';
 import HeaderPortfolioDropdown from './components/HeaderPortfolioDropdown';
 import { SelectedPortfolioProvider, useSelectedPortfolio } from './SelectedPortfolioContext';
 import SimpleHome from './pages/home/HomePage';
+import ReauthBanner from './components/ReauthBanner';
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -184,6 +185,7 @@ const AppContent: React.FC = () => {
           </Link>
         ))}
       </footer>
+      <ReauthBanner />
     </div>
   );
 };
@@ -198,7 +200,7 @@ const MainContent: React.FC = React.memo(() => {
           path="/" 
           element={
             selectedPortfolio ? (
-              <SimpleHome selectedPortfolio={selectedPortfolio} />
+              <SimpleHome />
             ) : (
               <PortfolioSelectorPage selectedPortfolio={selectedPortfolio} onPortfolioSelect={(name) => setSelectedPortfolio(name)} />
             )

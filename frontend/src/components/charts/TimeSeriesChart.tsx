@@ -15,14 +15,16 @@ export interface TimeSeriesChartProps {
   }>;
   height?: number;
   valueFormatter?: (value: number) => string;
-  normalizeToZero?: boolean; // When true, normalize all series to start at 0
+  normalizeToZero?: boolean; // When true, normalize all series to start at 0 (legacy behavior)
+  normalizeToPercent?: boolean; // When true, normalize each series to relative percent change from first value ((v-first)/first*100)
 }
 
 const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ 
   series, 
   height = 300, 
   valueFormatter = (value: number) => value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-  normalizeToZero = false
+  normalizeToZero = false,
+  normalizeToPercent = false
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<any>(null);
@@ -78,7 +80,9 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({
     ];
 
     // Configure price scale formatting for percentage display (like PerformanceChart Y-axis)
-    if (normalizeToZero) {
+    // Apply percentage-style formatting to the price scale when either normalization
+    // mode is active (subtract-first or percent-from-first) so the Y-axis reads as %.
+    if (normalizeToZero || normalizeToPercent) {
       chart.priceScale('right').applyOptions({
         scaleMargins: { top: 0.1, bottom: 0.1 },
         borderColor: 'rgba(161,161,170,0.2)',
@@ -132,8 +136,9 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({
           minMove: 0.01
         };
       } else {
-        // Use percentage formatting when normalizing, otherwise numeric price formatting
-        seriesOptions.priceFormat = normalizeToZero ? {
+        // Use percentage formatting when either normalization mode is active,
+        // otherwise numeric price formatting.
+        seriesOptions.priceFormat = (normalizeToZero || normalizeToPercent) ? {
           type: 'custom',
           formatter: (price: number) => `${price.toFixed(1)}%`,
           minMove: 0.01
@@ -162,19 +167,29 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({
         })
         .sort((a, b) => String(a.time).localeCompare(String(b.time)));
 
-      // Normalize pct_from_first to start at 0 for EACH series independently (EXACT same logic as PerformanceChart.tsx)
-      if (normalizeToZero && chartData.length > 0) {
-        // Find the first point with a valid (non-null) value for THIS series
+      // Normalization modes:
+      // - normalizeToPercent: convert to relative percent change = (value - first)/first * 100
+      // - normalizeToZero (legacy): subtract first value so first point becomes 0
+      if ((normalizeToPercent || normalizeToZero) && chartData.length > 0) {
         const firstPoint = chartData.find(d => d.value !== null && d.value !== undefined);
         if (firstPoint && typeof firstPoint.value === 'number') {
           const firstValue = firstPoint.value;
-          // Subtract the first value from all points to normalize THIS series to start at 0
-          chartData = chartData.map(point => ({
-            time: point.time,
-            value: point.value !== null && point.value !== undefined && typeof point.value === 'number'
-              ? point.value - firstValue 
-              : point.value
-          }));
+          if (normalizeToPercent) {
+            // If firstValue is zero, fall back to subtract-first to avoid division by zero
+            if (firstValue === 0) {
+              chartData = chartData.map(point => ({ time: point.time, value: typeof point.value === 'number' ? point.value - firstValue : point.value }));
+            } else {
+              chartData = chartData.map(point => ({
+                time: point.time,
+                value: (point.value !== null && point.value !== undefined && typeof point.value === 'number')
+                  ? ((point.value - firstValue) / firstValue) * 100
+                  : point.value
+              }));
+            }
+          } else {
+            // legacy: subtract-first
+            chartData = chartData.map(point => ({ time: point.time, value: typeof point.value === 'number' ? point.value - firstValue : point.value }));
+          }
         }
       }
 
@@ -196,7 +211,7 @@ const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({
       chart.remove();
       chartRef.current = null;
     };
-  }, [series, height, valueFormatter, normalizeToZero]);
+  }, [series, height, valueFormatter, normalizeToZero, normalizeToPercent]);
 
   return (
     <div 

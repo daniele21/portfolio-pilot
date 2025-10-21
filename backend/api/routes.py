@@ -100,65 +100,46 @@ def get_all_portfolios():
     if request.method == 'OPTIONS':  # CORS preflight
         return ('', 200)
     q = (request.args.get('q') or '').strip()
-    provider = (request.args.get('provider') or 'gemini').lower()
     if len(q) < 2:
         return jsonify({'error': 'Query too short (min 2 chars)'}), 400
+    lang = request.args.get('lang', 'en-US')
+    region = request.args.get('region', 'US')
     try:
-        if provider == 'yahoo':
-            from services.yahoo_search import search_instruments
-            lang = request.args.get('lang', 'en-US')
-            region = request.args.get('region', 'US')
-            data = search_instruments(q, lang=lang, region=region)
-            data['provider'] = 'yahoo'
-            return jsonify(data), 200
-        # default: gemini
-        from services.gemini_ticker_search import gemini_ticker_search
-        # Optional parameters
-        model_name = request.args.get('model')
-        try:
-            temperature = float(request.args.get('temperature') or 0.0)
-        except Exception:
-            temperature = 0.0
-        try:
-            max_output_tokens = int(request.args.get('max_output_tokens') or 256)
-        except Exception:
-            max_output_tokens = 256
-        grounding = (request.args.get('grounding') or 'false').lower() in ('1', 'true', 'yes')
-        data = gemini_ticker_search(q, model_name=model_name, temperature=temperature, max_output_tokens=max_output_tokens, grounding=grounding)
+        from services.yahoo_search import search_instruments
+        data = search_instruments(q, lang=lang, region=region)
+        data['provider'] = 'yahoo'
         return jsonify(data), 200
     except Exception as e:  # pragma: no cover
         current_app.logger.exception('ticker_search failed')
-        return jsonify({'error': f'Search failed: {e}', 'provider': provider, 'query': q, 'results': []}), 500
+        return jsonify({'error': f'Search failed: {e}', 'query': q, 'results': []}), 500
 
 
 @bp.route('/api/tickers/search', methods=['GET', 'OPTIONS'])
-def gemini_search_route():
-    """Direct Gemini ticker discovery endpoint.
+def ticker_search_route():
+    """Unified Yahoo Finance ticker search endpoint.
 
-    Query params: q (required), model (optional), temperature (optional), max_output_tokens (optional), grounding (optional true/false)
+    Query params:
+      q (required, min 2 chars)
+      lang (optional, default en-US)
+      region (optional, default US)
+
+    Returns JSON: { query, results: [...], provider: 'yahoo', error? }
     """
-    if request.method == 'OPTIONS':
+    if request.method == 'OPTIONS':  # CORS preflight
         return ('', 200)
     q = (request.args.get('q') or '').strip()
     if len(q) < 2:
         return jsonify({'error': 'Query too short (min 2 chars)'}), 400
-    model_name = request.args.get('model')
+    lang = request.args.get('lang', 'en-US')
+    region = request.args.get('region', 'US')
     try:
-        temperature = float(request.args.get('temperature') or 0.0)
-    except Exception:
-        temperature = 0.0
-    try:
-        max_output_tokens = int(request.args.get('max_output_tokens') or 256)
-    except Exception:
-        max_output_tokens = 256
-    grounding = (request.args.get('grounding') or 'true').lower() in ('1', 'true', 'yes')
-    try:
-        from services.gemini_ticker_search import gemini_ticker_search
-        data = gemini_ticker_search(q, model_name=model_name, temperature=temperature, max_output_tokens=max_output_tokens, grounding=grounding)
+        from services.yahoo_search import search_instruments
+        data = search_instruments(q, lang=lang, region=region)
+        data['provider'] = 'yahoo'
         return jsonify(data), 200
-    except Exception as e:
-        current_app.logger.exception('gemini_search_route failed')
-        return jsonify({'error': str(e)}), 500
+    except Exception as e:  # pragma: no cover
+        current_app.logger.exception('ticker_search_route failed')
+        return jsonify({'error': f'Search failed: {e}', 'query': q, 'results': []}), 500
 
 
 @bp.route('/api/transactions/<string:portfolio_name>', methods=['POST'])
@@ -200,24 +181,131 @@ def add_transactions(portfolio_name):
     return jsonify({'status': 'saved', 'count': len(inserted), 'transactions': inserted})
 
 
+# Legacy ingest preflight support: some frontends may still call the older
+# `/api/transactions/ingest/<portfolio>` path. Provide an OPTIONS handler so
+# CORS preflight requests succeed (return 200) instead of producing a 404.
+@bp.route('/api/transactions/ingest/<string:portfolio_name>', methods=['OPTIONS'])
+def ingest_legacy_options(portfolio_name):
+    # No content needed; allow the browser to proceed with the actual POST to
+    # the intended endpoint (prefer `/api/transactions/ingest-with-resolution/...`).
+    return ('', 200)
+
+
 @bp.route('/api/transactions/ingest/<string:portfolio_name>', methods=['POST'])
-def ingest_transactions(portfolio_name):
-    """Ingest transactions from raw text or uploaded document(s).
+def ingest_legacy_post(portfolio_name):
+    """Legacy POST shim: delegate to the new ingest-with-resolution flow.
 
-    Accepts:
-      - JSON: { raw: str }
-      - multipart/form-data with one or multiple file fields named 'file'
+    This keeps backward compatibility for clients that still post to the
+    older `/api/transactions/ingest/<portfolio>` URL while reusing the
+    same human-in-the-loop suggestion flow implemented in
+    `ingest_transactions_with_resolution`.
+    """
+    # Call the existing route handler which will read from `request` and
+    # perform the same processing and response behavior.
+    return ingest_transactions_with_resolution(portfolio_name)
 
-    Returns inserted transactions or validation errors.
+
+# @bp.route('/api/transactions/ingest/<string:portfolio_name>', methods=['POST'])
+# def ingest_transactions(portfolio_name):
+#     """Ingest transactions from raw text or uploaded document(s).
+
+#     Accepts:
+#       - JSON: { raw: str }
+#       - multipart/form-data with one or multiple file fields named 'file'
+
+#     Returns inserted transactions or validation errors.
+#     """
+#     from db.portfolios import save_transactions, save_transactions_user
+#     from core.ingestion import (
+#         extract_transactions_from_file,
+#         validate_transactions_basic,
+#         resolve_transactions,
+#     )
+#     all_transactions = []
+#     used_llm = False
+#     sources = []
+#     if request.content_type and 'multipart/form-data' in request.content_type:
+#         if not request.files:
+#             return jsonify({'error': 'No files uploaded'}), 400
+#         for file in request.files.getlist('file'):
+#             try:
+#                 txs, llm_used, src = extract_transactions_from_file(file, portfolio_name)
+#                 if llm_used:
+#                     used_llm = True
+#                 sources.append(src)
+#                 all_transactions.extend(txs)
+#             except Exception as e:
+#                 current_app.logger.exception("File ingestion failed")
+#                 return jsonify({'error': f'Failed to process file {file.filename}: {e}'}), 500
+#     else:
+#         # Expect JSON body with 'raw'
+#         try:
+#             data = safe_get_json(request)
+#         except ValueError as e:
+#             return jsonify({'error': str(e)}), 400
+#         raw_text = data.get('raw')
+#         if not raw_text:
+#             return jsonify({'error': 'Missing raw text or files'}), 400
+#         from core.gemini_helper import parse_transactions
+#         try:
+#             all_transactions = parse_transactions(raw_text, portfolio_name)
+#             used_llm = True
+#             sources.append('raw-text')
+#         except Exception as e:
+#             return jsonify({'error': f'LLM parsing failed: {e}'}), 500
+#     # Two-phase validation: basic normalization (no network calls) followed by
+#     # symbol resolution which batches unique yahoo_ticker / ISIN lookups.
+#     basic = validate_transactions_basic(all_transactions, portfolio_name)
+#     cleaned = resolve_transactions(basic)
+#     if not cleaned:
+#         return jsonify({'error': 'No valid transactions extracted'}), 400
+#     from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+#     try:
+#         uid, err = get_request_user_id_or_error()
+#         if err:
+#             return err
+#     except TokenExpiredError as e:
+#         return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+#     except TokenInvalidError as e:
+#         return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+#     if uid:
+#         inserted = save_transactions_user(uid, portfolio_name, cleaned)
+#     else:
+#         inserted = save_transactions(portfolio_name, cleaned)
+#     return jsonify({
+#         'status': 'saved',
+#         'portfolio': portfolio_name,
+#         'count': len(inserted),
+#         'transactions': inserted,
+#         'used_llm': used_llm,
+#         'sources': sources,
+#     })
+
+
+@bp.route('/api/transactions/ingest-with-resolution/<string:portfolio_name>', methods=['POST'])
+def ingest_transactions_with_resolution(portfolio_name):
+    """
+    Ingest transactions with human-in-the-loop ticker resolution.
+    
+    Like ingest_transactions but uses resolve_transactions_with_suggestions
+    to detect failed ticker lookups and provide suggestions for user resolution.
+    
+    Returns either:
+    - Success response with saved transactions (if all tickers resolved)
+    - Pending resolution response with ticker suggestions (if some tickers need user input)
     """
     from db.portfolios import save_transactions, save_transactions_user
     from core.ingestion import (
         extract_transactions_from_file,
-        validate_transactions,
+        validate_transactions_basic,
+        resolve_transactions_with_suggestions,
     )
+    
     all_transactions = []
     used_llm = False
     sources = []
+    
+    # Parse input (same as ingest_transactions)
     if request.content_type and 'multipart/form-data' in request.content_type:
         if not request.files:
             return jsonify({'error': 'No files uploaded'}), 400
@@ -247,9 +335,14 @@ def ingest_transactions(portfolio_name):
             sources.append('raw-text')
         except Exception as e:
             return jsonify({'error': f'LLM parsing failed: {e}'}), 500
-    cleaned = validate_transactions(all_transactions, portfolio_name)
-    if not cleaned:
-        return jsonify({'error': 'No valid transactions extracted'}), 400
+    
+    # Basic validation first
+    basic = validate_transactions_basic(all_transactions, portfolio_name)
+    
+    # Advanced resolution with suggestions
+    resolution_result = resolve_transactions_with_suggestions(basic)
+    
+    # Check authentication
     from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
     try:
         uid, err = get_request_user_id_or_error()
@@ -259,17 +352,151 @@ def ingest_transactions(portfolio_name):
         return jsonify({'error': 'token_expired', 'message': str(e)}), 401
     except TokenInvalidError as e:
         return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
-    if uid:
-        inserted = save_transactions_user(uid, portfolio_name, cleaned)
+    
+    if resolution_result.has_pending:
+        # Some tickers need user resolution - return pending status
+        return jsonify({
+            'status': 'pending_resolution',
+            'portfolio': portfolio_name,
+            'resolved_count': len(resolution_result.resolved_transactions),
+            'pending_resolutions': resolution_result.pending_resolutions,
+            'resolved_transactions': resolution_result.resolved_transactions,
+            'all_transactions': basic,  # Return original transactions for resolution
+            'used_llm': used_llm,
+            'sources': sources,
+        })
     else:
-        inserted = save_transactions(portfolio_name, cleaned)
+        # All tickers resolved - save transactions
+        if not resolution_result.resolved_transactions:
+            return jsonify({'error': 'No valid transactions extracted'}), 400
+            
+        if uid:
+            inserted = save_transactions_user(uid, portfolio_name, resolution_result.resolved_transactions)
+        else:
+            inserted = save_transactions(portfolio_name, resolution_result.resolved_transactions)
+            
+        return jsonify({
+            'status': 'saved',
+            'portfolio': portfolio_name,
+            'count': len(inserted),
+            'transactions': inserted,
+            'used_llm': used_llm,
+            'sources': sources,
+        })
+
+
+@bp.route('/api/transactions/resolve-ticker/<string:portfolio_name>', methods=['POST'])
+def resolve_ticker_choice(portfolio_name):
+    """
+    Complete ticker resolution based on user choice and save remaining transactions.
+    
+    Expected body:
+    {
+        "ticker_resolutions": [
+            {
+                "original_ticker": "AAPL_TYPO",
+                "chosen_symbol": "AAPL"
+            }
+        ],
+        "all_transactions": [all_transaction_objects_from_original_ingestion],
+        "resolved_transactions": [already_resolved_transaction_objects]
+    }
+
+    After the switch to a pure suggestion phase, transactions are NOT written
+    before this endpoint. We now:
+      1. Validate each chosen_symbol.
+      2. Apply the mapping to every transaction whose primary identifier
+         (yahoo_ticker > ticker > isin) matches an original_ticker.
+      3. Overwrite its 'ticker' field with the chosen symbol.
+      4. Preserve the raw identifier the user saw in a new 'original_input'
+         field when it differs (for audit / traceability).
+    This ensures the stored transactions carry the finalized ticker while we
+    can still reconstruct what the user originally imported if needed.
+    """
+    try:
+        data = safe_get_json(request)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    
+    ticker_resolutions = data.get('ticker_resolutions', [])
+    all_transactions = data.get('all_transactions', [])
+    resolved_transactions = data.get('resolved_transactions', [])
+    
+    if not ticker_resolutions:
+        return jsonify({'error': 'No ticker resolutions provided'}), 400
+    
+    # Process each ticker resolution
+    from services.ticker_resolution import resolve_ticker_with_user_choice
+    
+    # Create a mapping of original_ticker -> chosen_symbol
+    ticker_mapping = {}
+    for resolution in ticker_resolutions:
+        original_ticker = resolution.get('original_ticker')
+        chosen_symbol = resolution.get('chosen_symbol')
+        
+        if not original_ticker or not chosen_symbol:
+            return jsonify({'error': 'Invalid ticker resolution format'}), 400
+        
+        # Validate the chosen symbol works
+        resolution_result = resolve_ticker_with_user_choice(original_ticker, chosen_symbol)
+        if not resolution_result.success:
+            return jsonify({
+                'error': f'Chosen symbol {chosen_symbol} could not be validated',
+                'details': resolution_result.error
+            }), 400
+        
+        ticker_mapping[original_ticker] = chosen_symbol.strip().upper()
+    
+    # Apply ticker resolutions to all transactions.
+    # resolved_transactions list is expected to be empty in the new flow but we keep
+    # compatibility if future logic pre-resolves some rows.
+    final_transactions = []
+    # Index pre-resolved by an intrinsic key so we can avoid duplicating if present.
+    pre_existing = {(t.get('id') or None): t for t in resolved_transactions if isinstance(t, dict)}
+
+    for tx in all_transactions:
+        if not isinstance(tx, dict):
+            continue
+        primary_ticker = tx.get("yahoo_ticker") or tx.get("ticker") or tx.get("isin") or ""
+        tx_copy = dict(tx)
+        if primary_ticker in ticker_mapping:
+            chosen = ticker_mapping[primary_ticker]
+            original_input = primary_ticker.strip().upper() if primary_ticker else None
+            tx_copy['ticker'] = chosen  # overwrite with finalized symbol
+            if original_input and original_input != chosen:
+                tx_copy['original_input'] = original_input
+        # Ensure 'ticker' exists even if user left original (edge case when original_ticker had no ticker field set)
+        if not tx_copy.get('ticker') and primary_ticker in ticker_mapping:
+            tx_copy['ticker'] = ticker_mapping[primary_ticker]
+        final_transactions.append(tx_copy)
+    
+    if not final_transactions:
+        return jsonify({'error': 'No valid transactions to save'}), 400
+    
+    # Save all transactions
+    from db.portfolios import save_transactions, save_transactions_user
+    from api.auth import TokenExpiredError, TokenInvalidError, get_request_user_id
+    
+    try:
+        uid, err = get_request_user_id_or_error()
+        if err:
+            return err
+    except TokenExpiredError as e:
+        return jsonify({'error': 'token_expired', 'message': str(e)}), 401
+    except TokenInvalidError as e:
+        return jsonify({'error': 'invalid_token', 'message': str(e)}), 401
+    
+    if uid:
+        inserted = save_transactions_user(uid, portfolio_name, final_transactions)
+    else:
+        inserted = save_transactions(portfolio_name, final_transactions)
+    
     return jsonify({
         'status': 'saved',
         'portfolio': portfolio_name,
         'count': len(inserted),
         'transactions': inserted,
-        'used_llm': used_llm,
-        'sources': sources,
+        'resolved_tickers': len(ticker_resolutions),
     })
 
 
@@ -448,10 +675,10 @@ def portfolio_risk_route(portfolio_name):
                 if ref_dt == datetime.now().date():
                     return jsonify({'report': existing.get('report'), 'cost': existing.get('cost'), 'reference_date': existing.get('reference_date')}), 200
 
-        # No fresh report found => compute
-        from core.portfolio import get_portfolio_status, get_cached_portfolio_performance
-        status = get_portfolio_status(portfolio_name, uid=uid)
-        returns = get_cached_portfolio_performance(portfolio_name, uid=uid)
+            # No fresh report found => compute
+            from core.portfolio import get_portfolio_status, get_cached_portfolio_performance
+            status = get_portfolio_status(portfolio_name, uid=uid)
+            returns = get_cached_portfolio_performance(portfolio_name, uid=uid, debug=False)
 
         from services.gemini_portfolio_risk import gemini_portfolio_risk_analysis
         res = gemini_portfolio_risk_analysis(status, returns)
@@ -525,7 +752,7 @@ def portfolio_sumup_route(portfolio_name):
             return jsonify({'sumup': existing.get('sumup'), 'cost': existing.get('cost'), 'reference_date': existing.get('reference_date'), 'cached': True}), 200
 
         # 2. Gather context
-        performance = get_cached_portfolio_performance(portfolio_name, uid=uid) or []
+        performance = get_cached_portfolio_performance(portfolio_name, uid=uid, debug=False) or []
 
         # Full RETURNS KPIs (reuse same underlying core functions as /kpis/returns endpoint) - simplified aggregation
         returns_kpis = {}
@@ -1052,19 +1279,62 @@ def portfolio_performance(portfolio_name):
         uid, err = get_request_user_id_or_error()
         if err:
             return err
-        cache_key = f"performance::{uid + ':' if uid else ''}{portfolio_name}"
+        # Support a debug query param to include per-day per-ticker diagnostics.
+        debug_flag = (request.args.get('debug') or '').lower() in ('1', 'true', 'yes')
+        cache_key = f"performance::{uid + ':' if uid else ''}{portfolio_name}::debug={'1' if debug_flag else '0'}"
         cached = _get_intraday_cached(cache_key)
         if cached is not None:
             return jsonify(cached)
-        perf = get_cached_portfolio_performance(portfolio_name, uid=uid)
+        perf = get_cached_portfolio_performance(portfolio_name, uid=uid, debug=debug_flag)
         # If performance computation returned empty, try to provide a minimal current snapshot
         if not perf or (isinstance(perf, list) and len(perf) == 0):
             try:
+                # Fallback: produce a single-day snapshot using the same fields
+                # produced by compute_portfolio_performance so callers get a
+                # consistent shape even when historical series is unavailable.
                 from core.portfolio import get_portfolio_status
                 uid = get_request_user_id()
                 status = get_portfolio_status(portfolio_name, uid=uid)
-                total_value = status.get('total_value', 0)
-                perf = [{ 'date': datetime.utcnow().strftime('%Y-%m-%d'), 'value': total_value, 'abs_value': total_value, 'pct': 0.0, 'pct_from_first': 0.0 }]
+                # prefer total_market_value when available; cost-basis comes from status.total_value
+                total_market = float(status.get('total_market_value', status.get('total_value', 0) or 0) or 0)
+                cost_basis = float(status.get('total_value', 0) or 0)
+
+                # If we don't have a cost_basis from saved status, try deriving from transactions
+                if not cost_basis:
+                    try:
+                        from db.portfolios import get_transactions, get_transactions_user
+                        txs = get_transactions_user(uid, portfolio_name) if uid else get_transactions(portfolio_name)
+                        cb = 0.0
+                        for t in txs:
+                            try:
+                                q = float(t.get('quantity', 0) or 0)
+                                p = float(t.get('price', 0) or 0)
+                            except Exception:
+                                q = 0.0
+                                p = 0.0
+                            if q > 0:
+                                cb += q * p
+                        cost_basis = float(cb or 0.0)
+                    except Exception:
+                        cost_basis = 0.0
+
+                net_unrealised = total_market - cost_basis
+                pct = (net_unrealised / cost_basis * 100.0) if cost_basis else 0.0
+
+                perf = [{
+                    'date': datetime.utcnow().strftime('%Y-%m-%d'),
+                    'total_value': cost_basis,
+                    'total_market_value': total_market,
+                    'net_unrealised_pnl': net_unrealised,
+                    'net_unrealized_pnl': net_unrealised,
+                    'pct': pct,
+                    # Removed pct_from_first - frontend computes this from total_market_value
+                    # Provide realized fields (no realized P&L available in fallback; default to 0)
+                    'realized_pnl': 0.0,
+                    'realised_pnl': 0.0,
+                    # cumulative total cost spent (no transaction history here; default to 0)
+                    'total_cost_spent': 0.0,
+                }]
             except Exception:
                 perf = []
         _set_intraday_cache(cache_key, perf)
@@ -1215,8 +1485,8 @@ def portfolio_kpis(portfolio_name):
             return err
         status = get_portfolio_status(portfolio_name, uid=uid)
 
-        # Extract KPIs from portfolio status
-        total_value = status.get('total_value', 0)
+        # Extract KPIs from portfolio status. Prefer market valuation when available.
+        total_value = status.get('total_market_value', status.get('total_value', 0))
         holdings_count = len(status.get('holdings', []))
 
         uid, err = get_request_user_id_or_error()
@@ -1227,29 +1497,35 @@ def portfolio_kpis(portfolio_name):
         if cached is not None:
             return jsonify(cached)
 
-        # Try to compute a simple cost-basis and net performance from transactions
+        # Derive cost-basis and net performance. Prefer the cost-basis
+        # computed by get_portfolio_status (status['total_value']) which
+        # already applies average-cost logic per ticker. Fall back to a
+        # transaction-derived sum of buys if the saved status lacks it.
         net_performance = None
         net_pl = None
-        cost_basis = None
         try:
-            from db.portfolios import get_transactions, get_transactions_user
-            txs = get_transactions_user(uid, portfolio_name) if uid else get_transactions(portfolio_name)
-            # cost basis: sum(quantity * price) for buy transactions (quantity > 0)
-            cost_basis = 0.0
-            for t in txs:
-                try:
-                    q = float(t.get('quantity', 0) or 0)
-                    p = float(t.get('price', 0) or 0)
-                except Exception:
-                    q = 0.0
-                    p = 0.0
-                if q > 0:
-                    cost_basis += q * p
-            if cost_basis and isinstance(total_value, (int, float)):
+            cost_basis = float(status.get('total_value', 0) or 0)
+            # If status did not provide a meaningful cost basis, attempt
+            # to approximate it from transaction history (sum of buys).
+            if not cost_basis:
+                from db.portfolios import get_transactions, get_transactions_user
+                txs = get_transactions_user(uid, portfolio_name) if uid else get_transactions(portfolio_name)
+                cb = 0.0
+                for t in txs:
+                    try:
+                        q = float(t.get('quantity', 0) or 0)
+                        p = float(t.get('price', 0) or 0)
+                    except Exception:
+                        q = 0.0
+                        p = 0.0
+                    if q > 0:
+                        cb += q * p
+                cost_basis = float(cb or 0.0)
+
+            if isinstance(total_value, (int, float)):
                 net_pl = float(total_value) - float(cost_basis)
                 net_performance = (net_pl / cost_basis) * 100 if cost_basis != 0 else None
         except Exception:
-            # If transaction-based derivation fails, leave net fields as None
             net_performance = None
             net_pl = None
             cost_basis = None
@@ -1278,8 +1554,14 @@ def portfolio_kpis(portfolio_name):
                 tk = h.get('ticker')
                 if not tk:
                     continue
-                current_abs = float(h.get('value', 0) or 0)
-                cb = float(per_ticker_cost.get(tk, 0) or 0)
+                # prefer market_value for current absolute valuation; fall back to legacy 'value'
+                _v = h.get('market_value')
+                if _v is None:
+                    _v = h.get('value', 0)
+                current_abs = float(_v or 0)
+                # Prefer per-holding saved cost-basis when present; fall back
+                # to the transaction-derived per_ticker_cost if missing.
+                cb = float(h.get('value', per_ticker_cost.get(tk, 0) or 0) or 0)
                 # Only compute net metrics when we have a non-zero cost basis
                 if cb and cb != 0:
                     pct = (current_abs - cb) / cb * 100.0

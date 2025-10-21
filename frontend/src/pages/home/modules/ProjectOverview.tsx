@@ -26,6 +26,24 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ performanceDerived, m
     return null;
   }, [kpis]);
 
+  // Prefer market-level total if available, fallback to performanceDerived.latestAbs or legacy total_value
+  const displayTotalValue: number | null = React.useMemo(() => {
+    const mv = kpis?.total_market_value;
+    if (typeof mv === 'number') return mv;
+    const pd = performanceDerived?.latestAbs;
+    if (typeof pd === 'number') return pd;
+    const tv = kpis?.total_value;
+    if (typeof tv === 'number') return tv;
+    return null;
+  }, [kpis, performanceDerived]);
+
+  // Legacy / cost-basis total (if provided separately)
+  const costBasisTotal: number | null = React.useMemo(() => {
+    const tv = kpis?.total_value;
+    if (typeof tv === 'number') return tv;
+    return null;
+  }, [kpis]);
+
   // Final performance to display: prefer netPerformanceFromKpis, fallback to pctFromFirst
   const displayPerformance: number | null = React.useMemo(() => {
     if (netPerformanceFromKpis !== null) return netPerformanceFromKpis;
@@ -74,14 +92,20 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ performanceDerived, m
           <div className="bg-gradient-to-r from-slate-800/50 to-slate-700/30 rounded-xl p-3 sm:p-4 border border-white/10">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex-1">
-                <div className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Total Portfolio Value</div>
+                <div className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Market Value</div>
                 <div className="text-2xl sm:text-3xl font-bold text-white">
                   {maskPortfolioValue ? '••••••••' : (
-                    performanceDerived.latestAbs !== null
-                      ? `€ ${performanceDerived.latestAbs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    displayTotalValue !== null
+                      ? `€ ${displayTotalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                       : 'N/A'
                   )}
                 </div>
+                {/* Show legacy cost-basis total when available (smaller, secondary) */}
+                {costBasisTotal !== null && costBasisTotal !== displayTotalValue && (
+                  <div className="text-sm text-slate-400 mt-1">
+                    Total Value (cost basis): <span className="font-semibold">{maskPortfolioValue ? '••••••' : `€ ${costBasisTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}</span>
+                  </div>
+                )}
                 {/* Compact Net Value Display */}
                 {(() => {
                   const netVal = (typeof kpis?.net_pl === 'number') ? kpis.net_pl : (typeof performanceDerived?.latestNet === 'number' ? performanceDerived.latestNet : null);

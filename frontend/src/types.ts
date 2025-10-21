@@ -24,7 +24,16 @@ export interface HistoricalDataPoint {
   value: number; // Net value (market value minus cost spent)
   abs_value?: number; // Absolute market value (gross, not net)
   pct?: number; // Percentage performance relative to cost spent
-  pct_from_first?: number; // Percentage performance relative to first abs_value (for normalized trend)
+  cash?: number;
+  equity?: number;
+  twr_daily_pct?: number;
+  twr_cum_pct?: number;
+  // pct_from_first removed - now calculated client-side when needed for Performance view
+  // Backend compatibility aliases (some endpoints now return these names)
+  total_value?: number; // cost-basis
+  total_market_value?: number; // market valuation
+  net_unrealised_pnl?: number; // net unrealised pnl (British spelling)
+  net_unrealized_pnl?: number; // net unrealized pnl (American spelling)
 }
 
 export interface Asset {
@@ -97,6 +106,15 @@ export interface StandardizedMovement extends Movement {
   assetRegion?: string;
   assetQualitativeRisk?: 'Low' | 'Medium' | 'High' | 'Unknown';
   name?: string; // Asset name from backend 'name' column
+  // New fields returned by backend ingestion API
+  operation?: string; // normalized operation: Buy/Sell/Commission/Dividend/Tax/etc
+  ticker?: string; // canonical ticker (may be same as assetSymbol)
+  isin?: string;
+  yahoo_ticker?: string;
+  label?: string | null; // legacy label field
+  id?: string; // backend id for persisted transactions
+  portfolio?: string; // portfolio name owning the transaction
+  created_at?: string; // backend creation timestamp
 }
 
 export interface ProcessMovementsResult {
@@ -188,14 +206,22 @@ export interface BackendTickerResponse { // Top-level response from GET /api/tic
 // Types for Portfolio Status (GET /api/portfolio/<name>/status)
 export interface PortfolioHolding {
   ticker: string;
-  quantity: number;
+  quantity: number; // Absolute quantity (positive)
+  signed_quantity?: number; // Signed quantity (positive buy, negative sell) when available
   price: number; // Current market price from backend
-  value: number; // Current total value (quantity * price) from backend
+  avg_cost?: number; // Average cost per unit (PMC) when available
+  market_value?: number; // Market value = price * signed_quantity
+  unrealized_pnl?: number; // Unrealized P/L for this holding (market - cost_basis)
+  value: number; // Reported total value (cost-basis or market) from backend
+  name?: string; // Optional human-readable name for the ticker
   // Note: currency might be part of TickerInfoDetails, or assumed USD
 }
 export interface PortfolioStatusResponse {
   holdings: PortfolioHolding[];
   total_value: number;
+  total_market_value?: number;
+  net_unrealized_pnl?: number;
+  net_unrealised_pnl?: number;
   last_updated?: string; // ISO string for last update time
   // Potentially add portfolio currency if backend provides it
 }
@@ -228,7 +254,7 @@ export interface BackendSaveTransactionsResponse {
 // Ingestion (file or raw) response shape
 export interface BackendIngestTransactionsResponse extends BackendSaveTransactionsResponse {
   portfolio?: string;
-  transactions?: any[]; // TODO: refine typing to StandardizedMovement-like
+  transactions?: StandardizedMovement[]; // Standardized transactions returned after ingestion
   used_llm?: boolean;
   sources?: string[];
   error?: string;

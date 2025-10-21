@@ -1,6 +1,8 @@
 import { HistoricalDataPoint, BackendTickerResponse, BackendTickerHistoryItem } from '../types';
 import { API_BASE_URL, cleanApiBaseUrl as _cleanApiBaseUrl } from '../apiBase';
 import { apiFetch } from '../utils/apiFetch';
+import { globalRefreshStrategy } from '../utils/authFetch';
+import { jwtDecode } from 'jwt-decode';
 
 export const getAuthIdToken = (): string | null => {
   return localStorage.getItem('idToken');
@@ -10,7 +12,23 @@ const commonFetch = async (apiUrl: string, symbolForLogging: string): Promise<Ba
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
   };
-  const idToken = getAuthIdToken();
+  let idToken = getAuthIdToken();
+  // Proactive refresh if token expiring within 2 minutes.
+  if (idToken) {
+    try {
+      const decoded: any = jwtDecode(idToken);
+      const exp = decoded?.exp;
+      const now = Math.floor(Date.now() / 1000);
+      if (typeof exp === 'number' && exp - now < 120 && globalRefreshStrategy) {
+        try {
+          const refreshed = await globalRefreshStrategy();
+          if (refreshed) idToken = refreshed;
+        } catch (e) {
+          console.warn('MarketDataService: proactive refresh failed', e);
+        }
+      }
+    } catch {/* ignore decode errors */}
+  }
   if (idToken) {
     headers['Authorization'] = `Bearer ${idToken}`;
   } else {
@@ -62,12 +80,13 @@ export const fetchHistoricalMarketPrices = async (
 };
 
 export const fetchTickerDetails = async (symbol: string): Promise<BackendTickerResponse | null> => {
-  const base = _cleanApiBaseUrl(API_BASE_URL);
-  const apiUrl = `${base}/api/ticker/${encodeURIComponent(symbol.toUpperCase())}`;
-  
-  const response = await commonFetch(apiUrl, symbol);
-  // console.log(`MarketDataService: fetchTickerDetails response for ${symbol}`, response);
-  return response;
+  // Disabled: avoid calling /api/ticker/<symbol> directly from the frontend.
+  // This prevents per-ticker fetches originating from callers such as portfolioService.getAssets().
+  console.warn(`[MarketDataService] fetchTickerDetails is disabled in the frontend. Requested: ${symbol}`);
+  // Emit a trace so developers can find remaining callers during dev/debugging.
+  try { console.trace(); } catch (e) { /* ignore */ }
+  // Return a sentinel response so callers receive a predictable shape they can handle.
+  return { source: 'CLIENT_DISABLED', ticker: symbol, error: 'fetchTickerDetails disabled on client' } as BackendTickerResponse;
 };
 
 export interface TickerSearchResultItem {
@@ -87,7 +106,8 @@ export interface TickerSearchResponse {
   error?: string;
 }
 
-export const searchTickers = async (query: string, provider: 'gemini' | 'yahoo' = 'gemini'): Promise<TickerSearchResponse | null> => {
+// Symbol search is now Yahoo-only by default as per updated requirements (Gemini retained elsewhere for analytics)
+export const searchTickers = async (query: string, provider: 'yahoo' | 'gemini' = 'yahoo'): Promise<TickerSearchResponse | null> => {
   const q = query.trim();
   if (q.length < 2) return { query: q, count: 0, results: [] };
   const base = _cleanApiBaseUrl(API_BASE_URL);

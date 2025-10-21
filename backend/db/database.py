@@ -22,7 +22,7 @@ from .reports import (
     save_ticker_report,
     get_ticker_report,
 )
-from .portfolios import migrate_from_sqlite
+# from .portfolios import migrate_from_sqlite
 
 __all__ = [
     "init_db",
@@ -44,5 +44,5 @@ __all__ = [
     "get_portfolio_report",
     "save_ticker_report",
     "get_ticker_report",
-    "migrate_from_sqlite",
+    # "migrate_from_sqlite",
 ]

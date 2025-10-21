@@ -1,10 +1,54 @@
 import React from 'react';
-import { PresentationChartLineIcon } from '@heroicons/react/24/outline';
+// PresentationChartLineIcon intentionally unused here; remove import to avoid lint warnings
 import TimeSeriesChart from './charts/TimeSeriesChart';
 import DateRangePicker from '../components/DateRangePicker';
 import type { HistoricalDataPoint } from '../types';
 
-export type ValueType = 'value' | 'abs_value' | 'pct' | 'pct_from_first';
+const buildNormalizedTwrSeries = (
+  points: HistoricalDataPoint[] | undefined,
+  id: string,
+  name: string
+) => {
+  if (!points || points.length === 0) return null;
+  const sorted = [...points].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+  );
+  let cumulative = 1;
+  let baseline: number | null = null;
+  const usable = [];
+  // Rebuild cumulative TWR by compounding daily returns and rebase to the first point in-range
+  for (const point of sorted) {
+    const dailyRaw = point.twr_daily_pct;
+    const cumRaw = point.twr_cum_pct;
+    let nextCumulative: number | null = null;
+    if (typeof dailyRaw === 'number' && Number.isFinite(dailyRaw)) {
+      nextCumulative = cumulative * (1 + dailyRaw / 100);
+    } else if (typeof cumRaw === 'number' && Number.isFinite(cumRaw)) {
+      nextCumulative = 1 + cumRaw / 100;
+    }
+    if (nextCumulative === null) {
+      continue;
+    }
+    cumulative = nextCumulative;
+    if (baseline === null) {
+      baseline = cumulative;
+    }
+    const safeBaseline =
+      baseline !== null && Math.abs(baseline) > 1e-12 ? baseline : 1;
+    usable.push({
+      time: point.date,
+      value: (cumulative / safeBaseline - 1) * 100
+    });
+  }
+  if (usable.length === 0) return null;
+  return {
+    id,
+    name,
+    data: usable
+  };
+};
+
+export type ValueType = 'value' | 'abs_value' | 'pct' | 'performance' | 'twr';
 
 export interface GenericPerfSectionProps {
   /** Section heading */
@@ -89,13 +133,15 @@ const GenericPerformanceSection: React.FC<GenericPerfSectionProps> = ({
               value: 'Net Value',
               abs_value: 'Absolute Value',
               pct: 'Net Performance',
-              pct_from_first: 'Performance'
+              performance: 'Performance',
+              twr: 'TWR'
             };
             const mobileLabels: Record<ValueType, string> = {
               value: 'Net Value',
               abs_value: 'Abs Value',
               pct: 'Net Perf',
-              pct_from_first: 'Performance'
+              performance: 'Performance',
+              twr: 'TWR'
             };
             return (
               <div className="flex items-center gap-1 sm:gap-3">
@@ -159,61 +205,210 @@ const GenericPerformanceSection: React.FC<GenericPerfSectionProps> = ({
           <p className="ml-4 text-lg text-gray-300">Loading data...</p>
         </div>
       ) : (hasMulti ? (
-        <div className="mt-6 bg-gray-800/50 rounded-lg border border-white/10 p-4">
-          <TimeSeriesChart
-            series={series!.map(s => ({
-              id: s.id,
-              name: s.name,
-              data: s.data.map(point => ({
-                time: point.date,
-                // Use nullish coalescing so explicit 0 values are preserved (0 is falsy with ||)
-                value: (point as any)[valueType] ?? point.value ?? 0
-              }))
-            }))}
-            height={320}
-            normalizeToZero={valueType === 'pct_from_first'}
-            valueFormatter={(value) => {
-              if (valueType === 'pct') {
-                return `${value.toFixed(2)}%`;
-              } else if (valueType === 'pct_from_first') {
-                // When normalized, the chart already shows percentage values
-                return `${value.toFixed(2)}%`;
+        <div className="mt-6 bg-gray-800/50 rounded-lg border border-white/10 p-4">{
+            (() => {
+              // Build series for chart: 'pct' uses backend pct; 'performance' is computed client-side and normalized per series
+              if (valueType === 'performance' || valueType === 'twr') {
+                // Calculate true investment performance: net_unrealised / cost_basis
+                // This isolates investment gains/losses from cash flow effects (buys/sells)
+                const aggByDate: Record<string, { netUnreal: number; costBasis: number }> = {};
+                
+                if (series && series.length > 0) {
+                  series.forEach(s => {
+                    s.data.forEach((p: any) => {
+                      const d = p.date;
+                      const netUnreal = Number(p.net_unrealised_pnl ?? p.net_unrealized_pnl ?? 0) || 0;
+                      const totalVal = Number(p.total_value ?? 0) || 0;
+                      if (!aggByDate[d]) aggByDate[d] = { netUnreal: 0, costBasis: 0 };
+                      aggByDate[d].netUnreal += netUnreal;
+                      aggByDate[d].costBasis += totalVal;
+                    });
+                  });
+                } else {
+                  data.forEach((p: any) => {
+                    const d = p.date;
+                    const netUnreal = Number(p.net_unrealised_pnl ?? p.net_unrealized_pnl ?? 0) || 0;
+                    const totalVal = Number(p.total_value ?? 0) || 0;
+                    if (!aggByDate[d]) aggByDate[d] = { netUnreal: 0, costBasis: 0 };
+                    aggByDate[d].netUnreal += netUnreal;
+                    aggByDate[d].costBasis += totalVal;
+                  });
+                }
+
+                  const dates = Object.keys(aggByDate).sort();
+                
+                // Calculate portfolio market value performance (same as KPI calculation)
+                // This matches the backend's compute_returns_since() logic
+                let firstMarketValue = 0;
+                
+                if (dates.length > 0) {
+                  const firstDate = dates[0];
+                  const { netUnreal, costBasis } = aggByDate[firstDate];
+                  firstMarketValue = costBasis + netUnreal; // total_market_value = cost_basis + net_unrealised
+                }
+                
+                // If backend provided per-date twr_cum_pct in the flattened `data` series, prefer that exact series
+                if (valueType === 'twr') {
+                  const normalized = buildNormalizedTwrSeries(data as HistoricalDataPoint[] | undefined, 'portfolio', title);
+                  if (normalized) {
+                    return (
+                      <TimeSeriesChart
+                        series={[normalized]}
+                        height={320}
+                        valueFormatter={(value) => `${value.toFixed(2)}%`}
+                        normalizeToZero={false}
+                        normalizeToPercent={false}
+                      />
+                    );
+                  }
+                }
+
+                const built = [{ 
+                  id: 'portfolio', 
+                  name: title, 
+                  data: dates.map(d => {
+                    const { netUnreal, costBasis } = aggByDate[d];
+                    const currentMarketValue = costBasis + netUnreal;
+                    // Calculate performance as: (current_market_value - first_market_value) / first_market_value * 100
+                    const performancePct = firstMarketValue > 1e-9 ? ((currentMarketValue - firstMarketValue) / firstMarketValue * 100.0) : 0.0;
+                    // For 'twr' fallback we will let the chart normalize the market values to percent-from-first
+                    return { time: d, value: performancePct };
+                  })
+                }];
+
+                return (
+                  <TimeSeriesChart
+                    series={built}
+                    height={320}
+                    valueFormatter={(value) => `${value.toFixed(2)}%`}
+                    // No normalization needed for performance, but when valueType==='twr' we may want percent-from-first
+                    normalizeToZero={false}
+                    normalizeToPercent={valueType === 'twr'}
+                  />
+                );
               }
-              return value.toLocaleString(undefined, { 
-                minimumFractionDigits: 2, 
-                maximumFractionDigits: 2 
-              });
-            }}
-          />
-        </div>
+              // non-performance: normal mapping
+              return (
+                <TimeSeriesChart
+                  series={series!.map(s => ({
+                    id: s.id,
+                    name: s.name,
+                    data: s.data.map(point => ({ 
+                      time: point.date, 
+                      // For 'pct' use the backend-provided pct value
+                      value: valueType === 'pct' ? Number((point as any).pct ?? 0) : ((point as any)[valueType] ?? (point as any).value ?? 0)
+                    }))
+                  }))}
+                  height={320}
+                  valueFormatter={(value) => {
+                    if (valueType === 'pct') return `${value.toFixed(2)}%`;
+                    return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                  }}
+                />
+              );
+            })()
+        }</div>
       ) : (
-        <div className="mt-6 bg-gray-800/50 rounded-lg border border-white/10 p-4">
-          <TimeSeriesChart
-            series={[{
-              id: 'portfolio',
-              name: title,
-              data: data.map(point => ({
-                time: point.date,
-                // Preserve 0 values; use nullish coalescing
-                value: (point as any)[valueType] ?? point.value ?? 0
-              }))
-            }]}
-            height={320}
-            normalizeToZero={valueType === 'pct_from_first'}
-            valueFormatter={(value) => {
-              if (valueType === 'pct') {
-                return `${value.toFixed(2)}%`;
-              } else if (valueType === 'pct_from_first') {
-                // When normalized, the chart already shows percentage values
-                return `${value.toFixed(2)}%`;
+        <div className="mt-6 bg-gray-800/50 rounded-lg border border-white/10 p-4">{
+            (() => {
+              if (valueType === 'performance' || valueType === 'twr') {
+
+                  if (valueType === 'twr') {
+                    const normalized = buildNormalizedTwrSeries(data as HistoricalDataPoint[] | undefined, 'portfolio', title);
+                    if (normalized) {
+                      return (
+                        <TimeSeriesChart
+                          series={[normalized]}
+                          height={320}
+                          valueFormatter={(value) => `${value.toFixed(2)}%`}
+                          normalizeToZero={false}
+                          normalizeToPercent={false}
+                        />
+                      );
+                    }
+                  }
+
+                  // Compute per-date portfolio market value from available fields and
+                  // aggregate across series (or from single data). Prefer provided
+                  // total_market_value; otherwise reconstruct as total_value + net_unrealised.
+                  const aggByDate: Record<string, number> = {};
+                  if (series && series.length > 0) {
+                    series.forEach(s => {
+                      s.data.forEach((p: any) => {
+                        const d = p.date;
+                        const netUnreal = Number(p.net_unrealised_pnl ?? p.net_unrealized_pnl ?? 0) || 0;
+                        const totalVal = Number(p.total_value ?? 0) || 0;
+                        const market = Number(p.total_market_value ?? (totalVal + netUnreal)) || 0;
+                        if (!aggByDate[d]) aggByDate[d] = 0;
+                        aggByDate[d] += market;
+                      });
+                    });
+                  } else {
+                    data.forEach((p: any) => {
+                      const d = p.date;
+                      const netUnreal = Number(p.net_unrealised_pnl ?? p.net_unrealized_pnl ?? 0) || 0;
+                      const totalVal = Number(p.total_value ?? 0) || 0;
+                      const market = Number(p.total_market_value ?? (totalVal + netUnreal)) || 0;
+                      if (!aggByDate[d]) aggByDate[d] = 0;
+                      aggByDate[d] += market;
+                    });
+                  }
+
+                  const dates = Object.keys(aggByDate).sort();
+
+                  // If 'twr' requested, prefer backend-provided twr_cum_pct when available.
+                  if (valueType === 'twr') {
+                    // We cannot access backend twr directly here because fetchPortfolioPerformance currently maps to HistoricalDataPoint.
+                    // Instead, pass market values and let TimeSeriesChart normalize to percent-from-first which approximates cumulative TWR when flows are excluded.
+                    const builtMarket = [{ id: 'portfolio', name: title, data: dates.map(d => ({ time: d, value: aggByDate[d] })) }];
+                    return (
+                      <TimeSeriesChart
+                        series={builtMarket}
+                        height={320}
+                        valueFormatter={(value) => `${value.toFixed(2)}%`}
+                        normalizeToZero={false}
+                        normalizeToPercent={true}
+                      />
+                    );
+                  }
+
+                  const built = [{ id: 'portfolio', name: title, data: dates.map(d => ({ time: d, value: aggByDate[d] })) }];
+
+                  return (
+                    <TimeSeriesChart
+                      series={built}
+                      height={320}
+                      valueFormatter={(value) => `${value.toFixed(2)}%`}
+                      // percent-from-first applied to portfolio market values yields
+                      // the period percent change ((end - start)/start*100) matching KPIs
+                      normalizeToZero={false}
+                      normalizeToPercent={true}
+                    />
+                  );
               }
-              return value.toLocaleString(undefined, { 
-                minimumFractionDigits: 2, 
-                maximumFractionDigits: 2 
-              });
-            }}
-          />
-        </div>
+              // non-performance
+              return (
+                <TimeSeriesChart
+                  series={[{ id: 'portfolio', name: title, data: data.map(point => ({ 
+                    time: point.date, 
+                    value: valueType === 'pct' 
+                      ? (() => {
+                          // For 'pct' valueType, compute net unrealized percentage: net_unrealized / total_cost_spent
+                          const netUnrealized = Number((point as any).net_unrealised_pnl ?? (point as any).net_unrealized_pnl ?? (point as any).value ?? 0) || 0;
+                          const spent = Number((point as any).total_cost_spent ?? 0) || 0;
+                          return spent > 1e-9 ? (netUnrealized / spent * 100.0) : 0.0;
+                        })()
+                      : ((point as any)[valueType] ?? (point as any).value ?? 0)
+                  })) }]}
+                  height={320}
+                  valueFormatter={(value) => {
+                    if (valueType === 'pct') return `${value.toFixed(2)}%`;
+                    return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                  }}
+                />
+              );
+            })()
+        }</div>
       ))}
     </div>
   );

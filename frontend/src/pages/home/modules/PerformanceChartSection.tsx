@@ -241,7 +241,7 @@ const PerformanceChartSection: React.FC<PerformanceChartSectionProps> = (props) 
                   <option value="value">Net Value</option>
                   <option value="abs_value">Abs Value</option>
                   <option value="pct">Net Perf</option>
-                  <option value="pct_from_first">Performance</option>
+                  <option value="performance">Performance</option>
                 </select>
               </div>
 
@@ -328,36 +328,130 @@ const PerformanceChartSection: React.FC<PerformanceChartSectionProps> = (props) 
             </div>
 
             {/* Chart */}
-            <div className="bg-gray-800/50 rounded-lg border border-white/10 p-3">
-              <TimeSeriesChart
-                series={props.series?.map(s => ({
-                  id: s.id,
-                  name: s.name,
-                  data: s.data.map((point: any) => ({
-                    time: point.date,
-                    value: (point as any)[props.valueType] ?? point.value ?? 0
-                  }))
-                })) || [{
-                  id: 'portfolio',
-                  name: 'Portfolio',
-                  data: props.data.map((point: any) => ({
-                    time: point.date,
-                    value: (point as any)[props.valueType] ?? point.value ?? 0
-                  }))
-                }]}
-                height={280}
-                normalizeToZero={props.valueType === 'pct_from_first'}
-                valueFormatter={(value) => {
-                  if (props.valueType === 'pct' || props.valueType === 'pct_from_first') {
-                    return `${value.toFixed(2)}%`;
+            <div className="bg-gray-800/50 rounded-lg border border-white/10 p-3">{
+              (() => {
+                // (previously inspected sample data; no longer needed)
+
+                if (props.valueType === 'performance') {
+                  // Calculate true investment performance: net_unrealised / cost_basis
+                  // This measures how well investments performed, isolated from cash flows (buys/sells)
+                  const aggByDate: Record<string, { netUnreal: number; costBasis: number }> = {};
+
+                  if (props.series && props.series.length > 0) {
+                    props.series.forEach(s => {
+                      s.data.forEach((p: any) => {
+                        const date = p.date;
+                        const netUnreal = Number(p.net_unrealised_pnl ?? p.net_unrealized_pnl ?? 0) || 0;
+                        const totalVal = Number(p.total_value ?? 0) || 0;
+                        if (!aggByDate[date]) aggByDate[date] = { netUnreal: 0, costBasis: 0 };
+                        aggByDate[date].netUnreal += netUnreal;
+                        aggByDate[date].costBasis += totalVal;
+                      });
+                    });
+                  } else {
+                    (props.data || []).forEach((p: any) => {
+                      const date = p.date;
+                      const netUnreal = Number(p.net_unrealised_pnl ?? p.net_unrealized_pnl ?? 0) || 0;
+                      const totalVal = Number(p.total_value ?? 0) || 0;
+                      if (!aggByDate[date]) aggByDate[date] = { netUnreal: 0, costBasis: 0 };
+                      aggByDate[date].netUnreal += netUnreal;
+                      aggByDate[date].costBasis += totalVal;
+                    });
                   }
-                  return value.toLocaleString(undefined, { 
-                    minimumFractionDigits: 2, 
-                    maximumFractionDigits: 2 
-                  });
-                }}
-              />
-            </div>
+
+                  const dates = Object.keys(aggByDate).sort();
+                  
+                  // Calculate portfolio market value performance (same as KPI calculation)
+                  // This matches the backend's compute_returns_since() logic
+                  let firstMarketValue = 0;
+                  
+                  if (dates.length > 0) {
+                    const firstDate = dates[0];
+                    const { netUnreal, costBasis } = aggByDate[firstDate];
+                    firstMarketValue = costBasis + netUnreal; // total_market_value = cost_basis + net_unrealised
+                  }
+                  
+                  // Prefer backend-provided twr_cum_pct if available
+                  if ((props.valueType as any) === 'twr' && props.data && Array.isArray(props.data) && props.data.some((p: any) => typeof p.twr_cum_pct === 'number')) {
+                    const builtFromBackend = [{ id: 'portfolio', name: 'Portfolio', data: (props.data || []).map((p: any) => ({ time: p.date, value: Number(p.twr_cum_pct ?? 0) })) }];
+                    return (
+                      <TimeSeriesChart
+                        series={builtFromBackend}
+                        height={280}
+                        normalizeToZero={false}
+                        normalizeToPercent={false}
+                        valueFormatter={(value) => `${value.toFixed(2)}%`}
+                      />
+                    );
+                  }
+
+                  const built = [{ 
+                    id: 'portfolio', 
+                    name: 'Portfolio', 
+                    data: dates.map(d => {
+                      const { netUnreal, costBasis } = aggByDate[d];
+                      const currentMarketValue = costBasis + netUnreal;
+                      const performancePct = firstMarketValue > 1e-9 ? 
+                        ((currentMarketValue - firstMarketValue) / firstMarketValue * 100.0) : 0.0;
+                      return { time: d, value: performancePct };
+                    })
+                  }];
+
+                  return (
+                    <TimeSeriesChart
+                      series={built}
+                      height={280}
+                      // If TWR requested and backend twr not available, let chart normalize market values to percent-from-first
+                      normalizeToZero={false}
+                      normalizeToPercent={(props.valueType as any) === 'twr'}
+                      valueFormatter={(value) => `${value.toFixed(2)}%`}
+                    />
+                  );
+                }
+
+                // non-performance
+                return (
+                  <TimeSeriesChart
+                    series={props.series?.map(s => ({ 
+                      id: s.id, 
+                      name: s.name, 
+                      data: s.data.map((point: any) => ({ 
+                        time: point.date, 
+                        value: props.valueType === 'pct' 
+                          ? (() => {
+                              // For 'pct' valueType, compute net unrealized percentage: net_unrealized / total_value
+                              const netUnrealized = Number(point.net_unrealised_pnl ?? point.net_unrealized_pnl ?? point.value ?? 0) || 0;
+                              const totalVal = Number(point.total_value ?? 0) || 0;
+                              return totalVal > 1e-9 ? (netUnrealized / totalVal * 100.0) : 0.0;
+                            })()
+                          : ((point as any)[props.valueType] ?? point.value ?? 0)
+                      })) 
+                    })) || [{ 
+                      id: 'portfolio', 
+                      name: 'Portfolio', 
+                      data: props.data.map((point: any) => ({ 
+                        time: point.date, 
+                        value: props.valueType === 'pct' 
+                          ? (() => {
+                              // For 'pct' valueType, compute net unrealized percentage: net_unrealized / total_value
+                              const netUnrealized = Number(point.net_unrealised_pnl ?? point.net_unrealized_pnl ?? point.value ?? 0) || 0;
+                              const totalVal = Number(point.total_value ?? 0) || 0;
+                              return totalVal > 1e-9 ? (netUnrealized / totalVal * 100.0) : 0.0;
+                            })()
+                          : ((point as any)[props.valueType] ?? point.value ?? 0)
+                      })) 
+                    }]}
+                    height={280}
+                    valueFormatter={(value) => {
+                      if (props.valueType === 'pct') return `${value.toFixed(2)}%`;
+                      return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    }}
+                    normalizeToZero={false}
+                    normalizeToPercent={false}
+                  />
+                );
+              })()
+            }</div>
 
             {/* Volatility Controls After Chart */}
             {props.showVolatility !== undefined && props.setShowVolatility && (

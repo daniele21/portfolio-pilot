@@ -97,16 +97,20 @@ const PortfolioStatusPage: React.FC = () => {
   }
 
   // Allowed sort keys for PortfolioHolding
-  type SortableHoldingKey = 'quantity' | 'price' | 'value';
+  // support 'market_value' as preferred current valuation
+  type SortableHoldingKey = 'quantity' | 'price' | 'value' | 'market_value';
 
   let holdings = status.holdings || [];
   if (sortBy) {
     const key = sortBy as SortableHoldingKey;
     holdings = [...holdings].sort((a, b) => {
-      let aVal = a[key];
-      let bVal = b[key];
-      if (typeof aVal === 'string') aVal = parseFloat(aVal);
-      if (typeof bVal === 'string') bVal = parseFloat(bVal);
+      let aVal: any = a[key];
+      let bVal: any = b[key];
+      if (typeof aVal === 'string') aVal = parseFloat(aVal as string);
+      if (typeof bVal === 'string') bVal = parseFloat(bVal as string);
+      // coerce undefined/null to 0 for sorting safety
+      aVal = (aVal === undefined || aVal === null) ? 0 : aVal;
+      bVal = (bVal === undefined || bVal === null) ? 0 : bVal;
       if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
       if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
       return 0;
@@ -147,7 +151,8 @@ const PortfolioStatusPage: React.FC = () => {
         Configure Targets
       </button>
       {/* No last_updated in PortfolioStatusResponse, so skip that */}
-      <div className="mb-6 text-lg text-indigo-300 font-semibold">Total Value: {status.total_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} </div>
+    <div className="mb-6 text-lg text-indigo-300 font-semibold">Market Value: {(status.total_market_value ?? status.total_value)?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} </div>
+    <div className="mb-3 text-sm text-gray-400">Total Value (cost basis): {status.total_value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} </div>
       <table className="min-w-full divide-y divide-gray-700 bg-gray-800 rounded-xl">
         <thead className="bg-gray-750">
           <tr>
@@ -159,8 +164,8 @@ const PortfolioStatusPage: React.FC = () => {
             <th className="px-4 py-2 text-right text-xs font-medium text-gray-300 uppercase cursor-pointer select-none" onClick={() => handleSort('price')}>
               Price {sortBy === 'price' && (sortDir === 'asc' ? '▲' : '▼')}
             </th>
-            <th className="px-4 py-2 text-right text-xs font-medium text-gray-300 uppercase cursor-pointer select-none" onClick={() => handleSort('value')}>
-              Value {sortBy === 'value' && (sortDir === 'asc' ? '▲' : '▼')}
+            <th className="px-4 py-2 text-right text-xs font-medium text-gray-300 uppercase cursor-pointer select-none" onClick={() => handleSort('market_value')}>
+              Market Value {sortBy === 'market_value' && (sortDir === 'asc' ? '▲' : '▼')}
             </th>
           </tr>
         </thead>
@@ -171,7 +176,7 @@ const PortfolioStatusPage: React.FC = () => {
               <td className="px-4 py-2 text-white">{h.name}</td>
               <td className="px-4 py-2 text-right text-gray-300">{h.quantity}</td>
               <td className="px-4 py-2 text-right text-gray-300">{h.price}</td>
-              <td className="px-4 py-2 text-right text-indigo-200 font-semibold">{h.value?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                <td className="px-4 py-2 text-right text-indigo-200 font-semibold">{(h.market_value ?? h.value)?.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
             </tr>
           ))}
         </tbody>

@@ -20,6 +20,8 @@ interface AuthContextType {
   handleSignOut: () => void;
   forceRefresh: () => Promise<string | null>; // Explicit refresh trigger returning Promise
   GOOGLE_CLIENT_ID: string;
+  needsReauth: boolean; // Session expired or refresh failed but we keep user context
+  reauthenticate: () => Promise<void>; // UI-triggered reauth attempt
 }
 
 const AuthContext = React.createContext<AuthContextType | undefined>(undefined);
@@ -31,8 +33,11 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [idToken, setIdToken] = React.useState<string | null>(null);
   const [profile, setProfile] = React.useState<UserProfile | null>(null);
   const [isGoogleAuthReady, setIsGoogleAuthReady] = React.useState<boolean>(false); // New state
+  const [needsReauth, setNeedsReauth] = React.useState<boolean>(false);
   const refreshPromiseRef = React.useRef<Promise<string | null> | null>(null);
   const refreshTimerRef = React.useRef<number | null>(null);
+  // Resolver function used when prompting for a silent credential without re-initializing.
+  const pendingRefreshResolverRef = React.useRef<((v: string | null) => void) | null>(null);
 
   // Clear any pending scheduled refresh
   const clearScheduledRefresh = () => {
@@ -69,56 +74,30 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   }, []);
 
   const forceRefresh = React.useCallback((): Promise<string | null> => {
+    // Reuse existing in-flight refresh.
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
-    // If GSI not ready, resolve null
-    if (!(window as any).google?.accounts?.id) {
-      return Promise.resolve(null);
-    }
+    if (!(window as any).google?.accounts?.id) return Promise.resolve(null);
+
     refreshPromiseRef.current = new Promise<string | null>((resolve) => {
+      pendingRefreshResolverRef.current = (val: string | null) => {
+        resolve(val);
+        refreshPromiseRef.current = null;
+        pendingRefreshResolverRef.current = null;
+      };
       try {
-        const gsi = (window as any).google.accounts.id;
-        gsi.initialize({
-          client_id: GOOGLE_CLIENT_ID_CONST,
-          callback: (resp: any) => {
-            const newTokenResp: string | null = resp && resp.credential ? resp.credential : null;
-            if (newTokenResp) {
-              localStorage.setItem('idToken', newTokenResp);
-              setIdToken(newTokenResp);
-              try {
-                const decodedToken: any = jwtDecode(newTokenResp);
-                setProfile({
-                  email: decodedToken.email,
-                  name: decodedToken.name,
-                  picture: decodedToken.picture,
-                  given_name: decodedToken.given_name,
-                  family_name: decodedToken.family_name,
-                });
-              } catch (err) {
-                console.error('[AuthContext] Error decoding refreshed token', err);
-              }
-              scheduleRefresh(newTokenResp);
-            }
-            resolve(newTokenResp);
-            refreshPromiseRef.current = null;
-          }
-        });
-        // Prompt usually silent if user already granted consent (One Tap / auto sign-in)
-        gsi.prompt((notification: any) => {
-          if (notification && (notification.isNotDisplayed?.() || notification.isSkippedMoment?.())) {
-            // Could not display or skipped; allow resolution if callback not already fired
-            // If still pending after small timeout, resolve null.
+        (window as any).google.accounts.id.prompt((notification: any) => {
+          if (notification?.isNotDisplayed?.() || notification?.isSkippedMoment?.()) {
+            // Silent credential not available.
             setTimeout(() => {
-              if (refreshPromiseRef.current) {
-                resolve(null);
-                refreshPromiseRef.current = null;
+              if (pendingRefreshResolverRef.current) {
+                pendingRefreshResolverRef.current(null);
               }
-            }, 500);
+            }, 400);
           }
         });
       } catch (e) {
-        console.error('[AuthContext] forceRefresh error', e);
-        resolve(null);
-        refreshPromiseRef.current = null;
+        console.error('[AuthContext] forceRefresh prompt error', e);
+        if (pendingRefreshResolverRef.current) pendingRefreshResolverRef.current(null);
       }
     });
     return refreshPromiseRef.current;
@@ -141,12 +120,20 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
           family_name: decodedToken.family_name,
         });
         scheduleRefresh(token);
+        setNeedsReauth(false); // recovered
       } catch (error) {
         console.error("[AuthContext] Error decoding ID token:", error);
         setProfile(null);
       }
+      // Resolve any pending manual refresh promise
+      if (pendingRefreshResolverRef.current) {
+        try { pendingRefreshResolverRef.current(token); } catch {/* ignore */}
+      }
     } else {
       console.error("[AuthContext] Google Sign-In: No credential found in response.");
+      if (pendingRefreshResolverRef.current) {
+        try { pendingRefreshResolverRef.current(null); } catch {/* ignore */}
+      }
     }
   }, [scheduleRefresh]);
   
@@ -236,24 +223,24 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     // Cleanup: ensure global refresh strategy is cleared if this provider unmounts
     const onTokenExpired = (ev: any) => {
       console.warn('[AuthContext] Received auth:token_expired event', ev?.detail);
-      // Notify the user and sign them out so they can relogin
+      // Soft-expire: keep UI state and allow user to reauthenticate.
       showNotification({
         title: 'Session expired',
-        message: 'Your session has expired. Please sign in again.',
+        message: 'Click to reauthenticate or continue browsing read-only.',
         color: 'yellow',
-        autoClose: 8000,
+        autoClose: 6000,
       });
-      handleSignOut();
+      setNeedsReauth(true);
     };
     const onInvalidToken = (ev: any) => {
       console.warn('[AuthContext] Received auth:invalid_token event', ev?.detail);
       showNotification({
-        title: 'Authentication error',
-        message: 'Your session is no longer valid. Please sign in again.',
+        title: 'Authentication issue',
+        message: 'Session lost. Use the Reauthenticate action to continue.',
         color: 'red',
-        autoClose: 8000,
+        autoClose: 6000,
       });
-      handleSignOut();
+      setNeedsReauth(true);
     };
 
     window.addEventListener('auth:token_expired', onTokenExpired as EventListener);
@@ -267,8 +254,16 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
 
   }, [handleCredentialResponse, isGoogleAuthReady, forceRefresh, scheduleRefresh, handleSignOut]); // include dependencies
 
+  const reauthenticate = React.useCallback(async () => {
+    const newTok = await forceRefresh();
+    if (!newTok) {
+      // Still failed; keep flag true.
+      setNeedsReauth(true);
+    }
+  }, [forceRefresh]);
+
   return (
-    <AuthContext.Provider value={{ idToken, profile, isLoggedIn: !!idToken, isGoogleAuthReady, handleSignOut, forceRefresh, GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID_CONST }}>
+    <AuthContext.Provider value={{ idToken, profile, isLoggedIn: !!idToken, isGoogleAuthReady, handleSignOut, forceRefresh, GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID_CONST, needsReauth, reauthenticate }}>
       {children}
     </AuthContext.Provider>
   );

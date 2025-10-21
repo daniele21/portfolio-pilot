@@ -23,7 +23,7 @@ const TickerPerformanceSection: React.FC<TickerPerformanceSectionProps> = ({
   selectedTickers,
 }) => {
   const { isLoggedIn, idToken } = useAuth();
-  const [valueType, setValueType] = React.useState<ValueType>('pct_from_first');
+  const [valueType, setValueType] = React.useState<ValueType>('performance');
   const [dateRange, setDateRange] = React.useState<{start: string; end: string} | null>(null);
   // Volatility overlay options
   const [showVolatility] = React.useState<boolean>(false);
@@ -134,7 +134,7 @@ const TickerPerformanceSection: React.FC<TickerPerformanceSectionProps> = ({
   const finalSeries = React.useMemo(() => {
     const base = Array.isArray(filteredSeries) ? filteredSeries : [];
     if (showVolatility && volatilityQuery.data && Array.isArray(volatilityQuery.data) && volatilityQuery.data.length > 0) {
-      const volData = volatilityQuery.data.map(pt => ({ date: pt.date, value: pt.volatility !== null && typeof pt.volatility === 'number' ? pt.volatility * 100 : 0, pct: pt.volatility !== null && typeof pt.volatility === 'number' ? pt.volatility * 100 : 0, pct_from_first: pt.volatility !== null && typeof pt.volatility === 'number' ? pt.volatility * 100 : 0 }));
+      const volData = volatilityQuery.data.map(pt => ({ date: pt.date, value: pt.volatility !== null && typeof pt.volatility === 'number' ? pt.volatility * 100 : 0, pct: pt.volatility !== null && typeof pt.volatility === 'number' ? pt.volatility * 100 : 0 }));
       const volSeries = {
         id: 'volatility',
         name: `Volatility (${volatilityWindow})`,

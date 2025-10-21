@@ -1,7 +1,8 @@
+from functools import lru_cache
 import os
 import google.generativeai as genai
 
-from core.gemini_cost import GEMINI_2_5_FLASH_LITE_PREVIEW_06_17
+from core.gemini_cost import GEMINI_2_5_FLASH, GEMINI_2_5_FLASH_LITE, GEMINI_2_5_FLASH_LITE_PREVIEW_06_17
 from core.gemini_cost import calculate_gemini_cost
 from db.database import *
 from services.data_fetcher import *
@@ -12,25 +13,58 @@ if not API_KEY:
 
 genai.configure(api_key=API_KEY)
 
+@lru_cache
 def parse_transactions(raw_text, portfolio_name=None):
-    prompt = (
-        "Extract all transactions from the text below. "
-        "Return directly just the VALID JSON list where each item has fields: "
-        "ticker, quantity, price, date (YYYY-MM-DD), label, portfolio, and name. "
-        "The output JSON MUST be a list of objects, each with these keys: "
-        "'ticker' (string), 'quantity' (number), 'price' (number), 'date' (YYYY-MM-DD), 'label' (string), 'name' (string). "
-        "If any field is missing in the input, set it to null or an empty string. "
-        "All final values must be in English for each field, so if you see italian values, convert to english. "
-        "DO NOT ADD ANYTHING ELSE. Output only the JSON list.\n"
-        "Example JSON schema: [\n"
-        "  {\"ticker\": \"AAPL\", \"quantity\": 10, \"price\": 150.0, \"date\": \"2024-06-01\", \"label\": \"Buy\", \"name\": \"Apple Inc.\"}\n"
-        "]"
+    prompt = """
+You are a strict data extractor.
+
+TASK: Extract ALL transactions from the text below and return ONLY a single valid JSON array (no prose, no markdown, no code fences).
+
+Each array item MUST have exactly these fields:
+- ticker: string (market symbol, optional; empty string if unknown)
+- isin: string (ISIN identifier, optional; prefer this if present; empty string if unknown)
+- name: string (issuer / asset name; empty string if unknown)
+- quantity: number (use numeric types; null if unknown) [in case of commissions/fees/taxes, this 0]
+- price: number (unit price as a plain number; null if unknown) [in case of commissions/fees/taxes, this is the total amount, not per-unit]
+- total_amount: final price that is the result of quantity * price; null if unknown or not applicable
+- date: string (ISO date YYYY-MM-DD; null if unknown)
+- operation: string (canonical operation: one of Buy, Sell, Dividend, Fee, Commission, Tax)
+- description: string (REQUIRED for operation values other than Buy or Sell; otherwise empty string)
+
+IMPORTANT RULES
+- Every transaction MUST include at least one identifier: 'isin' or 'ticker' (if both present, keep both).
+- Normalize operation names to the canonical English values listed above.
+- Normalize dates to ISO YYYY-MM-DD.
+- Return numbers as numeric types (no thousands separators).
+- Trim whitespace from all text fields.
+- If a numeric/date field cannot be determined, set it to null. If any text field is missing, set it to an empty string.
+- Could happen that just total_amount is available and price per unit not, in this case leave price as null
+
+Return a COMPACT JSON array only.
+
+TEXT TO PARSE:
+{raw_text}
+    """
+    model_name = os.getenv("GEMINI_MODEL", f"models/{GEMINI_2_5_FLASH_LITE}")
+    # Use grounded generation (Google Search) to improve ticker symbol resolution on Yahoo Finance.
+    from google import genai as genai_client
+    from google.genai import types
+    client = genai_client.Client()
+    # grounding_tool = types.Tool(google_search=types.GoogleSearch())
+    
+    config = types.GenerateContentConfig(temperature=0.0, 
+                                        #  tools=[grounding_tool],
+                                        #  response_mime_type="application/json"
+                                         )
+    
+    print("Prompt sent to Gemini (grounded):", prompt)
+    # Provide prompt + raw text as separate content items so the model can reference both
+    content = prompt.format(raw_text=raw_text)
+    response = client.models.generate_content(
+        model=model_name, 
+        contents=content,
+        config=config
     )
-    model_name = os.getenv("GEMINI_MODEL", f"models/{GEMINI_2_5_FLASH_LITE_PREVIEW_06_17}")
-    model = genai.GenerativeModel(model_name)
-    config = genai.GenerationConfig(temperature=0.0)
-    print("Prompt sent to Gemini:", prompt)
-    response = model.generate_content([prompt, raw_text], generation_config=config)
     try:
         from pprint import pprint
         pprint(response.__dict__)
@@ -68,47 +102,73 @@ def parse_transactions(raw_text, portfolio_name=None):
         except Exception:
             pass
     if text_parts:
-        cleaned = "".join(text_parts).strip("`\n ").replace('json', '')
+        # Keep only actual strings; drop None or other objects
+        safe_parts = [p for p in text_parts if isinstance(p, str)]
+        if len(safe_parts) != len(text_parts):
+            print(f"[Gemini parse] Dropped {len(text_parts) - len(safe_parts)} non-string parts from response")
+        try:
+            cleaned = "".join(safe_parts).strip("`\n ")
+        except TypeError as e:
+            # Last resort: coerce everything to string
+            print(f"[Gemini parse] Join failed ({e}); coercing all parts to str")
+            cleaned = "".join([str(p) for p in safe_parts])
+        # Remove leading markdown/json hints but avoid stripping legitimate 'json' substrings inside data
+        if cleaned.lower().startswith('json'):
+            cleaned = cleaned[4:].lstrip(':').lstrip()
         # Try to find the first and last square brackets to extract a valid JSON list
         start = cleaned.find('[')
         end = cleaned.rfind(']')
-        if start != -1 and end != -1:
+        if start != -1 and end != -1 and start < end:
             cleaned = cleaned[start:end+1]
     if not cleaned:
         raise RuntimeError("Could not extract text from Gemini response. Candidates, parts, and text fields were all empty or missing.")
     try:
         transactions = json.loads(cleaned)
-        # Ensure every transaction has a non-empty 'portfolio' field
+        # Ensure every transaction has a 'name' field (portfolio is supplied by frontend)
         for tx in transactions:
-            if 'portfolio' not in tx or not tx['portfolio']:
-                tx['portfolio'] = portfolio_name or "Imported"
             if 'name' not in tx:
                 tx['name'] = ''
     except Exception as e:
         raise RuntimeError(f"Could not decode JSON from Gemini response: {e}\nExtracted text: {cleaned}")
     # Validate schema after parsing
-    expected_keys = {'ticker', 'quantity', 'price', 'date', 'label', 'portfolio', 'name'}
+    expected_keys = {'ticker', 'isin', 'quantity', 'price', 'date', 'operation', 'name', 'description', 'yahoo_ticker'}
     for idx, tx in enumerate(transactions):
         missing = expected_keys - set(tx.keys())
         for key in missing:
             # Set missing fields to None, except 'portfolio' which must be a non-empty string, and 'ticker' which must be a non-empty string, and 'name' which must be a string
-            if key == 'portfolio':
-                tx['portfolio'] = portfolio_name or 'Imported'
-            elif key == 'ticker':
+            if key == 'ticker':
                 tx['ticker'] = ''
             elif key == 'name':
                 tx['name'] = ''
+            elif key == 'description':
+                tx['description'] = ''
+            elif key == 'yahoo_ticker':
+                tx['yahoo_ticker'] = ''
             else:
                 tx[key] = None
         # Enforce types and non-empty portfolio/ticker/name
-        if not tx['portfolio']:
-            tx['portfolio'] = portfolio_name or 'Imported'
         if not tx['ticker'] or not isinstance(tx['ticker'], str):
             tx['ticker'] = ''
         if 'name' not in tx or not isinstance(tx['name'], str):
             tx['name'] = ''
-    # Remove transactions with empty or null ticker (cannot be saved to DB)
-    transactions = [tx for tx in transactions if tx['ticker'] and isinstance(tx['ticker'], str) and tx['ticker'].strip()]
+        if 'description' not in tx or not isinstance(tx.get('description'), str):
+            tx['description'] = ''
+        if 'yahoo_ticker' not in tx or not isinstance(tx.get('yahoo_ticker'), str):
+            tx['yahoo_ticker'] = ''
+    # Remove transactions that lack both ticker and isin (we require at least one identifier)
+    def has_identifier(tx):
+        t = tx.get('ticker')
+        i = tx.get('isin')
+        if isinstance(t, str) and t.strip():
+            return True
+        if isinstance(i, str) and i.strip():
+            return True
+        return False
+
+    transactions = [tx for tx in transactions if has_identifier(tx)]
+    # Attach the provided portfolio name to each transaction (backend still validates/overrides)
+    for tx in transactions:
+        tx['portfolio'] = portfolio_name or ''
     return transactions
 
 def generate_grounded_report_response(prompt: str, 

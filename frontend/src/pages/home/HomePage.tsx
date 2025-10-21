@@ -41,8 +41,8 @@ const SimpleHome: React.FC = () => {
   const [showVolatility, setShowVolatility] = React.useState<boolean>(false);
   
   // Performance section state
-  // Default the value type to 'Performance' view (pct_from_first) so the select shows "Performance" by default
-  const [performanceValueType, setPerformanceValueType] = React.useState<ValueType>('pct_from_first');
+  // Default the value type to 'Performance' view so the select shows "Performance" by default
+  const [performanceValueType, setPerformanceValueType] = React.useState<ValueType>('performance');
   const [performanceDateRange, setPerformanceDateRange] = React.useState<{start: string; end: string} | null>(null);
   
   // Benchmarks: load a persisted list from IndexedDB if available, otherwise fallback to defaults
@@ -354,7 +354,7 @@ const SimpleHome: React.FC = () => {
               value: typeof pt.value === 'number' ? pt.value : (pt.abs_value ?? null),
               abs_value: typeof pt.abs_value === 'number' ? pt.abs_value : (pt.value ?? null),
               pct: typeof pt.pct === 'number' ? pt.pct : null,
-              pct_from_first: typeof pt.pct_from_first === 'number' ? pt.pct_from_first : (typeof pt.pct === 'number' ? pt.pct : null)
+              // pct_from_first is no longer provided by backend - calculated client-side when needed
             })).filter((pt: any) => pt.date !== null);
           }
           results[symbol] = normalized;
@@ -395,8 +395,43 @@ const SimpleHome: React.FC = () => {
         return typeof latest.abs_value === 'number' ? latest.abs_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : 'N/A';
       case 'pct':
         return typeof latest.pct === 'number' ? `${latest.pct.toFixed(2)}%` : 'N/A';
-      case 'pct_from_first':
-        return typeof latest.pct_from_first === 'number' ? `${latest.pct_from_first.toFixed(2)}%` : 'N/A';
+      case 'performance':
+        // For performance view, we calculate percent from first value client-side
+        // For display purposes, we can show the latest absolute value
+        return typeof latest.total_market_value === 'number' 
+          ? latest.total_market_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : (typeof latest.abs_value === 'number' 
+            ? latest.abs_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : 'N/A');
+      case 'twr': {
+        const sorted = [...filteredPerformanceData].sort(
+          (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+        );
+        let cumulative = 1;
+        let baseline: number | null = null;
+        let lastNormalized: number | null = null;
+        for (const point of sorted) {
+          const dailyRaw = point.twr_daily_pct;
+          const cumRaw = point.twr_cum_pct;
+          let nextCumulative: number | null = null;
+          if (typeof dailyRaw === 'number' && Number.isFinite(dailyRaw)) {
+            nextCumulative = cumulative * (1 + dailyRaw / 100);
+          } else if (typeof cumRaw === 'number' && Number.isFinite(cumRaw)) {
+            nextCumulative = 1 + cumRaw / 100;
+          }
+          if (nextCumulative === null) {
+            continue;
+          }
+          cumulative = nextCumulative;
+          if (baseline === null) {
+            baseline = cumulative;
+          }
+          const safeBaseline =
+            baseline !== null && Math.abs(baseline) > 1e-12 ? baseline : 1;
+          lastNormalized = (cumulative / safeBaseline - 1) * 100;
+        }
+        return lastNormalized === null ? 'N/A' : `${lastNormalized.toFixed(2)}%`;
+      }
       default:
         return 'N/A';
     }
@@ -439,7 +474,7 @@ const SimpleHome: React.FC = () => {
           // Chart expects numeric 'value' (required). Provide 0 when no value to satisfy type.
           value: p.volatility !== null && typeof p.volatility === 'number' ? p.volatility * 100 : 0,
           pct: p.volatility !== null && typeof p.volatility === 'number' ? p.volatility * 100 : 0,
-          pct_from_first: p.volatility !== null && typeof p.volatility === 'number' ? p.volatility * 100 : 0
+          // pct_from_first no longer needed - volatility data handled separately
         }))
       });
     }

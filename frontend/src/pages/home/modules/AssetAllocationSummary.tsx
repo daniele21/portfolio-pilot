@@ -15,7 +15,6 @@ const AssetAllocationSummary: React.FC<AssetAllocationSummaryProps> = ({
 }) => {
   // Sort assets by allocation percentage in descending order
   const sortedAssets = [...allocationAssets].sort((a, b) => (b.allocation_pct || 0) - (a.allocation_pct || 0));
-  const topAssets = sortedAssets.slice(0, 6);
   const totalValue = allocationAssets.reduce((sum, asset) => sum + (asset.value || 0), 0);
 
   const colorPalette = [
@@ -82,7 +81,7 @@ const AssetAllocationSummary: React.FC<AssetAllocationSummaryProps> = ({
       {totalValue > 0 ? (
         <>
           <div className="space-y-4 mb-4">
-            {topAssets.map((asset, index) => {
+            {sortedAssets.map((asset, index) => {
               const percentage = asset.allocation_pct || 0;
               const value = asset.value || 0;
               const targetPct = activeTargetMap ? (activeTargetMap[asset.symbol] ?? activeTargetMap[asset.name] ?? activeTargetMap[asset.id] ?? null) : null;
@@ -151,15 +150,7 @@ const AssetAllocationSummary: React.FC<AssetAllocationSummaryProps> = ({
               );
             })}
             
-            {allocationAssets.length > 6 && (
-              <div className="text-center pt-2">
-                <div className="bg-slate-800/40 rounded-lg p-2 border border-white/10">
-                  <span className="text-xs text-slate-400">
-                    +{allocationAssets.length - 6} more assets
-                  </span>
-                </div>
-              </div>
-            )}
+            {/* all assets are shown in the scrollable list */}
           </div>
         </>
       ) : (

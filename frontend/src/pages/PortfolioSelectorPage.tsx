@@ -74,8 +74,8 @@ const PortfolioSelectorPage: React.FC<PortfolioSelectorPageProps> = ({ onPortfol
         portfolioNames.map(async (name) => {
           // Try saved status first
           let status = await fetchPortfolioStatus(name);
-          // If no saved status or zero total_value, fall back to live status
-          if (!status || !status.total_value) {
+          // If no saved status or zero market total, fall back to live status
+          if (!status || !(status.total_market_value ?? status.total_value)) {
             console.log(`[PortfolioSelector] Falling back to live status for ${name}`);
             status = await fetchPortfolioStatusLive(name);
           }
@@ -281,7 +281,8 @@ const PortfolioSelectorPage: React.FC<PortfolioSelectorPageProps> = ({ onPortfol
 
     return {
       name,
-      totalValue: statusData?.total_value || 0,
+      // prefer market total when available
+      totalValue: statusData?.total_market_value ?? statusData?.total_value ?? 0,
       weeklyReturn,
       weeklyReturnPct,
       monthlyReturn,

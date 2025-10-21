@@ -3,7 +3,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../utils/apiFetch';
 import type { StandardizedMovement } from '../types';
-import { getAppliedMovementsLog, isUsingCustomData as checkIsCustomData, fetchTickerName, fetchAllPortfolioNames, ingestTransactions, savePortfolioStatus } from '../services/portfolioService';
+import { getAppliedMovementsLog, isUsingCustomData as checkIsCustomData, fetchTickerName, fetchAllPortfolioNames, ingestTransactionsWithResolution, resolveTickerChoices, savePortfolioStatus } from '../services/portfolioService';
 import { usePortfolioTransactions } from '../services/transactionsApi';
 import { ArrowUpIcon, ArrowDownIcon, PlusIcon, CloudArrowUpIcon, ChartBarIcon, BellIcon } from '@heroicons/react/24/outline';
 import { useAuth } from '../AuthContext';
@@ -31,6 +31,7 @@ type SortableKeys = 'date' | 'type' | 'assetName' | 'quantity' | 'price' | 'amou
 import ActionButton from '../components/ActionButton';
 import TransactionImportModal from '../components/TransactionImportModal';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
+import TickerResolutionModal from '../components/TickerResolutionModal';
 // Portfolio toolbar removed: selection is provided by SelectedPortfolioContext
 import { API_BASE_URL, cleanApiBaseUrl } from '../apiBase';
 
@@ -56,6 +57,7 @@ const TransactionsPage: React.FC = React.memo(() => {
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   // Add a state to trigger PortfolioStatusCard refresh
   const [statusRefreshKey, setStatusRefreshKey] = useState(0);
+  const [savingStatus, setSavingStatus] = useState(false);
   const [showTargetsModal, setShowTargetsModal] = useState(false);
   const [showBenchmarksModal, setShowBenchmarksModal] = useState(false);
   const [showAlertsModal, setShowAlertsModal] = useState(false);
@@ -64,6 +66,13 @@ const TransactionsPage: React.FC = React.memo(() => {
   const [benchmarks, setBenchmarks] = useState<{ symbol: string; name: string }[]>([]);
   const [benchmarksLoading, setBenchmarksLoading] = useState(false);
   const BENCHMARKS_CACHE_KEY = 'benchmarks_list_v1';
+  
+  // Ticker resolution states
+  const [showTickerResolutionModal, setShowTickerResolutionModal] = useState(false);
+  const [pendingResolutions, setPendingResolutions] = useState<any[]>([]);
+  const [resolvedTransactions, setResolvedTransactions] = useState<any[]>([]);
+  const [allTransactions, setAllTransactions] = useState<any[]>([]);
+  const [tickerResolutionLoading, setTickerResolutionLoading] = useState(false);
 
   const DEFAULT_BENCHMARKS = [
     { symbol: '^GSPC', name: 'S&P 500' },
@@ -188,9 +197,11 @@ const TransactionsPage: React.FC = React.memo(() => {
       sortableItems.sort((a: any, b: any) => {
         let valA = a[sortConfig.key];
         let valB = b[sortConfig.key];
-        if (sortConfig.key === 'type') {
+          if (sortConfig.key === 'type') {
           const getType = (mov: any) => {
-            const rawType = typeof mov.type === 'string' ? mov.type : (typeof mov.label === 'string' ? mov.label : '');
+            // Prefer the normalized `operation` field (Buy/Sell/etc). Fall back to
+            // legacy `type` or `label` fields to remain compatible with older imports.
+            const rawType = typeof mov.operation === 'string' ? mov.operation : (typeof mov.type === 'string' ? mov.type : (typeof mov.label === 'string' ? mov.label : ''));
             return rawType.replace(/_/g, ' ').toLowerCase();
           };
           valA = getType(a);
@@ -312,23 +323,82 @@ const TransactionsPage: React.FC = React.memo(() => {
       setImportError('Provide raw text or at least one file.');
       return;
     }
-  setImporting(true);
-  setImportError(null);
-    const resp = await ingestTransactions(importPortfolioName.trim(), uploadFiles, importText.trim() ? importText : null);
+    
+    setImporting(true);
+    setImportError(null);
+    
+    // Use the new resolution-aware ingestion endpoint
+    const resp = await ingestTransactionsWithResolution(importPortfolioName.trim(), uploadFiles, importText.trim() ? importText : null);
+    
     if (resp.status === 'saved') {
+      // All transactions were successfully resolved and saved
       setTimeout(() => {
         setShowImportModal(false);
         setImportText('');
         setUploadFiles([]);
         setImportPortfolioName('');
-  try { queryClient.invalidateQueries({ queryKey: ['transactions', resp.portfolio || importPortfolioName, true] }); } catch {}
+        try { queryClient.invalidateQueries({ queryKey: ['transactions', resp.portfolio || importPortfolioName, true] }); } catch {}
         fetchAllPortfolioNames().then(setAllPortfolioNames);
-        // progress messages removed (no longer tracked in component state)
       }, 800);
+    } else if (resp.status === 'pending_resolution') {
+      // Some tickers need user resolution
+      setImporting(false);
+      setShowImportModal(false);
+      setPendingResolutions(resp.pending_resolutions || []);
+      setResolvedTransactions(resp.resolved_transactions || []);
+      setAllTransactions(resp.all_transactions || []);
+      setShowTickerResolutionModal(true);
+      return; // Don't reset import state yet
     } else {
       setImportError(resp.message || resp.error || 'Failed to ingest transactions.');
     }
+    
     setImporting(false);
+  };
+
+  const handleTickerResolution = async (resolutions: Array<{original_ticker: string, chosen_symbol: string}>) => {
+    setTickerResolutionLoading(true);
+    
+    try {
+      const resp = await resolveTickerChoices(
+        importPortfolioName.trim(), 
+        resolutions, 
+        resolvedTransactions,
+        allTransactions
+      );
+      
+      if (resp.status === 'saved') {
+        setShowTickerResolutionModal(false);
+        setPendingResolutions([]);
+        setResolvedTransactions([]);
+        setAllTransactions([]);
+        setImportText('');
+        setUploadFiles([]);
+        setImportPortfolioName('');
+        
+        try { queryClient.invalidateQueries({ queryKey: ['transactions', resp.portfolio || importPortfolioName, true] }); } catch {}
+        fetchAllPortfolioNames().then(setAllPortfolioNames);
+      } else {
+        setImportError(resp.message || resp.error || 'Failed to save resolved transactions.');
+        setShowTickerResolutionModal(false);
+        setShowImportModal(true); // Show import modal again with error
+      }
+    } catch (error) {
+      console.error('Ticker resolution failed:', error);
+      setImportError('Ticker resolution failed. Please try again.');
+      setShowTickerResolutionModal(false);
+      setShowImportModal(true);
+    }
+    
+    setTickerResolutionLoading(false);
+  };
+
+  const handleCancelTickerResolution = () => {
+    setShowTickerResolutionModal(false);
+    setPendingResolutions([]);
+    setResolvedTransactions([]);
+    setAllTransactions([]);
+    setShowImportModal(true); // Return to import modal
   };
 
   // When importing transactions, if a new portfolio name is provided, use it instead of defaulting to 'Imported'.
@@ -377,18 +447,18 @@ const TransactionsPage: React.FC = React.memo(() => {
     }
     lastMovementsLengthRef.current = sortedMovements.length;
     
-    // For all movements missing assetName but with assetSymbol, fetch the name from backend
-    const missingNames = sortedMovements.filter(mov => 
-      mov.assetSymbol && 
-      !mov.assetName && 
-      !tickerNames[mov.assetSymbol] &&
-      !fetchedSymbolsRef.current.has(mov.assetSymbol)
-    );
+    // For all movements missing a display name but with a ticker/assetSymbol, fetch the name from backend.
+    // Prefer the new `ticker`/`name` fields returned by the API; fall back to legacy `assetSymbol`/`assetName`.
+    const missingNames = sortedMovements.filter(mov => {
+      const sym = (mov as any).ticker || (mov as any).assetSymbol;
+      const nm = (mov as any).name || (mov as any).assetName;
+      return !!sym && !nm && !tickerNames[sym] && !fetchedSymbolsRef.current.has(sym);
+    });
     if (missingNames.length === 0) return;
     
     const fetchNames = async () => {
       const updates: Record<string, string> = {};
-      const symbols = [...new Set(missingNames.map(mov => mov.assetSymbol).filter((s): s is string => !!s))];
+  const symbols = [...new Set(missingNames.map(mov => ((mov as any).ticker || (mov as any).assetSymbol)).filter((s): s is string => !!s))];
       
       await Promise.all(symbols.map(async (symbol: string) => {
         fetchedSymbolsRef.current.add(symbol);
@@ -448,6 +518,27 @@ const TransactionsPage: React.FC = React.memo(() => {
     } catch (err) {
       console.error('Delete transaction failed', err);
       setError('Failed to delete transaction.');
+    }
+  };
+
+  // Trigger server to recompute and save portfolio status on demand
+  const handleUpdateStatus = async () => {
+    if (!selectedPortfolio) return;
+    setSavingStatus(true);
+    setError(null);
+    try {
+      if (idToken) localStorage.setItem('idToken', idToken);
+      const result = await savePortfolioStatus(selectedPortfolio);
+      if (result && result.status !== 'error') {
+        setStatusRefreshKey(k => k + 1);
+      } else {
+        setError(result?.error || 'Failed to update portfolio status.');
+      }
+    } catch (e) {
+      console.error('Failed to update portfolio status', e);
+      setError('Failed to update portfolio status.');
+    } finally {
+      setSavingStatus(false);
     }
   };
 
@@ -641,6 +732,7 @@ const TransactionsPage: React.FC = React.memo(() => {
                 </div>
                   <div className="flex items-center gap-2">
                     <ActionButton variant="secondary" size="sm" onClick={() => setShowBenchmarksModal(true)}>Benchmarks</ActionButton>
+                    <ActionButton variant="secondary" size="sm" onClick={handleUpdateStatus} disabled={savingStatus}>{savingStatus ? 'Updating...' : 'Update Status'}</ActionButton>
                     <ActionButton variant="secondary" size="sm" onClick={() => setShowAlertsModal(true)}>
                       <BellIcon className="h-4 w-4" />
                       Alerts
@@ -845,6 +937,17 @@ const TransactionsPage: React.FC = React.memo(() => {
               onSave={async (updated: any) => {
                 return await handleEditSave(updated);
               }}
+            />,
+            document.getElementById('modal-root') as Element
+          )}
+
+          {ReactDOM.createPortal(
+            <TickerResolutionModal
+              open={showTickerResolutionModal}
+              pendingResolutions={pendingResolutions}
+              onResolve={handleTickerResolution}
+              onCancel={handleCancelTickerResolution}
+              loading={tickerResolutionLoading}
             />,
             document.getElementById('modal-root') as Element
           )}

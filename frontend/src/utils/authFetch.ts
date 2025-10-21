@@ -67,18 +67,22 @@ export async function authFetch(url: string, opts: AuthFetchOptions = {}): Promi
     headers: baseHeaders
   });
 
-  // If unauthorized and looks like token expired, attempt refresh+retry once
+  // If unauthorized and looks like token expired, attempt up to two refresh attempts.
   if (resp.status === 401 && retryOnExpired && effectiveRefresh) {
     try {
       const body = await resp.clone().json().catch(() => null);
       if (body && body.error === 'token_expired') {
-        const refreshed = await effectiveRefresh();
+        let refreshed = await effectiveRefresh();
+        if (!refreshed) {
+          // brief backoff then second attempt
+          await new Promise(r => setTimeout(r, 550));
+          refreshed = await effectiveRefresh();
+        }
         if (refreshed) {
           const retryHeaders = { ...baseHeaders, Authorization: `Bearer ${refreshed}` };
-          resp = await fetch(url, { ...rest, headers: retryHeaders });
-          return resp; // return retry response
+          return await fetch(url, { ...rest, headers: retryHeaders });
         }
-        // If we couldn't refresh, emit a global event so the app can react (e.g. show re-login UI)
+        // Emit soft-expire event (UI decides what to do; we do not clear credentials here)
         try {
           window.dispatchEvent(new CustomEvent('auth:token_expired', { detail: { url } }));
         } catch (e) {
