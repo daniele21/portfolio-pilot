@@ -1,8 +1,6 @@
 """
 Firestore client and collection constants.
 """
-from typing import Any
-from datetime import datetime
 import os
 
 LOG_FIRESTORE = os.environ.get("LOG_FIRESTORE", "0") in {"1", "true", "TRUE", "yes", "on"}

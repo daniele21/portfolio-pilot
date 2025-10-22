@@ -21,9 +21,73 @@ const getAuthIdToken = (): string | null => {
   return localStorage.getItem('idToken');
 };
 
+const getApiBase = (): string => cleanApiBaseUrl(API_BASE_URL);
+
+const buildPortfolioApiUrl = (portfolioId: string, endpoint: string): string => {
+  const base = getApiBase();
+  const normalizedEndpoint = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
+  const safePortfolioId = encodeURIComponent(portfolioId);
+  return `${base}/api/portfolio/${safePortfolioId}/${normalizedEndpoint}`;
+};
+
+const buildApiUrl = (path: string): string => {
+  const base = getApiBase();
+  return path.startsWith('/') ? `${base}${path}` : `${base}/${path}`;
+};
+
+const withCache = async <T>(
+  cacheKey: string,
+  ttl: number,
+  loader: () => Promise<T | null>
+): Promise<T | null> => {
+  try {
+    const cached = await idbGet(cacheKey);
+    if (cached != null) {
+      return cached as T;
+    }
+  } catch (error) {
+    console.debug(`[PortfolioService] Failed to read cache key ${cacheKey}`, error);
+  }
+
+  const fresh = await loader();
+  if (fresh != null) {
+    try {
+      await idbSet(cacheKey, fresh, ttl);
+    } catch (error) {
+      console.debug(`[PortfolioService] Failed to write cache key ${cacheKey}`, error);
+    }
+  }
+  return fresh;
+};
+
+const normalizeStatusPayload = (raw: any): PortfolioStatusResponse => {
+  if (raw?.status && (Array.isArray(raw.status.holdings) || raw.status.total_value !== undefined)) {
+    return {
+      holdings: Array.isArray(raw.status.holdings) ? raw.status.holdings : [],
+      total_value: raw.status.total_value ?? 0,
+      total_market_value: raw.status.total_market_value ?? raw.status.total_value ?? 0,
+      last_updated: raw.last_updated ?? raw.status.last_updated ?? undefined
+    };
+  }
+  return raw as PortfolioStatusResponse;
+};
+
+const fetchStatusVariant = async (
+  portfolioName: string,
+  endpoint: string,
+  cachePrefix: string
+): Promise<PortfolioStatusResponse | null> => {
+  if (!portfolioName) return null;
+  const cacheKey = `${cachePrefix}:${portfolioName}`;
+  return withCache<PortfolioStatusResponse>(cacheKey, CACHE_TTL_SHORT, async () => {
+    const raw = await commonPortfolioFetch<any>(endpoint, portfolioName);
+    if (!raw) return null;
+    return normalizeStatusPayload(raw);
+  });
+};
+
 const commonPortfolioFetch = async <T>(endpoint: string, portfolioId: string): Promise<T | null> => {
-  const base = cleanApiBaseUrl(API_BASE_URL);
-  const apiUrl = `${base}/api/portfolio/${portfolioId}/${endpoint}`;
+  const apiUrl = buildPortfolioApiUrl(portfolioId, endpoint);
   
   console.log(`[PortfolioService] GET ${apiUrl}`);
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
@@ -36,8 +100,12 @@ const commonPortfolioFetch = async <T>(endpoint: string, portfolioId: string): P
   }
 
   try {
-    const { ok, data, error } = await apiFetch<T>(apiUrl, { method: 'GET', headers });
+    const { ok, status, data, error } = await apiFetch<T>(apiUrl, { method: 'GET', headers });
     if (!ok) {
+      if (status === 401 || status === 403) {
+        console.warn(`PortfolioService: Unauthorized fetching ${apiUrl}. ${error ?? ''}`);
+        return null;
+      }
       const errorMsg = error || `API request failed: ${apiUrl}`;
       console.error(`PortfolioService: Error fetching ${apiUrl}. ${errorMsg}`);
       throw new Error(errorMsg);
@@ -50,67 +118,19 @@ const commonPortfolioFetch = async <T>(endpoint: string, portfolioId: string): P
 };
 
 // Fetch portfolio status for a given portfolio name using the new endpoint
-export const fetchPortfolioStatus = async (portfolioName: string): Promise<PortfolioStatusResponse | null> => {
-  if (!portfolioName) return null;
-  const cacheKey = `status:${portfolioName}`;
-  // Try cache first
-  try {
-    const cached = await idbGet(cacheKey);
-    if (cached) return cached as PortfolioStatusResponse;
-  } catch (e) {
-    // ignore cache errors
-  }
-  const raw = await commonPortfolioFetch<any>('status', portfolioName);
-  if (!raw) return null;
-  // Backend may return { last_updated: ..., status: { holdings: [...], total_value: ... } }
-  // Normalize to PortfolioStatusResponse { holdings, total_value, last_updated }
-  let normalized: PortfolioStatusResponse;
-  if (raw.status && (Array.isArray(raw.status.holdings) || raw.status.total_value !== undefined)) {
-    normalized = {
-      holdings: Array.isArray(raw.status.holdings) ? raw.status.holdings : [],
-      // preserve legacy total_value while preferring total_market_value
-      total_value: raw.status.total_value ?? 0,
-      total_market_value: raw.status.total_market_value ?? raw.status.total_value ?? 0,
-      last_updated: raw.last_updated ?? raw.status.last_updated ?? undefined
-    };
-  } else {
-    normalized = raw as PortfolioStatusResponse;
-  }
-  // Cache normalized response
-  try { await idbSet(cacheKey, normalized, CACHE_TTL_SHORT); } catch (e) {}
-  return normalized;
+export const fetchPortfolioStatus = (portfolioName: string): Promise<PortfolioStatusResponse | null> => {
+  return fetchStatusVariant(portfolioName, 'status', 'status');
 };
 
 // Fetch live (computed) portfolio status for a given portfolio name
-export const fetchPortfolioStatusLive = async (portfolioName: string): Promise<PortfolioStatusResponse | null> => {
-  if (!portfolioName) return null;
-  const cacheKey = `status_live:${portfolioName}`;
-  try {
-    const cached = await idbGet(cacheKey);
-    if (cached) return cached as PortfolioStatusResponse;
-  } catch {}
-  const raw = await commonPortfolioFetch<any>('status/live', portfolioName);
-  if (!raw) return null;
-  let normalized: PortfolioStatusResponse;
-  if (raw.status && (Array.isArray(raw.status.holdings) || raw.status.total_value !== undefined)) {
-    normalized = {
-      holdings: Array.isArray(raw.status.holdings) ? raw.status.holdings : [],
-      total_value: raw.status.total_value ?? 0,
-      total_market_value: raw.status.total_market_value ?? raw.status.total_value ?? 0,
-      last_updated: raw.last_updated ?? raw.status.last_updated ?? undefined
-    };
-  } else {
-    normalized = raw as PortfolioStatusResponse;
-  }
-  try { await idbSet(cacheKey, normalized, CACHE_TTL_SHORT); } catch (e) {}
-  return normalized;
+export const fetchPortfolioStatusLive = (portfolioName: string): Promise<PortfolioStatusResponse | null> => {
+  return fetchStatusVariant(portfolioName, 'status/live', 'status_live');
 };
 
 // Save the current computed status to the backend
 export const savePortfolioStatus = async (portfolioName: string): Promise<{ status: string; portfolio: string; data?: any; error?: string }> => {
   if (!portfolioName) return { status: 'error', portfolio: portfolioName, error: 'No portfolio name provided' };
-  const base = cleanApiBaseUrl(API_BASE_URL);
-  const apiUrl = `${base}/api/portfolio/${portfolioName}/status/save`;
+  const apiUrl = buildPortfolioApiUrl(portfolioName, 'status/save');
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -283,8 +303,7 @@ export const getAppliedMovementsLog = async (): Promise<StandardizedMovement[]> 
 
 export const processAndApplyMovements = async (fileContent: string): Promise<ProcessMovementsResult> => {
   // Use new API: POST /api/transactions/standardize-and-save with { raw: fileContent }
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/transactions/standardize-and-save`;
+  const apiUrl = buildApiUrl('/api/transactions/standardize-and-save');
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (!idToken) {
@@ -373,8 +392,7 @@ export const processAndApplyMovements = async (fileContent: string): Promise<Pro
 
 // New: ingest transactions with human-in-the-loop ticker resolution
 export const ingestTransactionsWithResolution = async (portfolioName: string, files: File[], rawText: string | null): Promise<any> => {
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const endpoint = `${cleanApiBaseUrl}/api/transactions/ingest-with-resolution/${encodeURIComponent(portfolioName)}`;
+  const endpoint = buildApiUrl(`/api/transactions/ingest-with-resolution/${encodeURIComponent(portfolioName)}`);
   const idToken = getAuthIdToken();
   if (!idToken) return { status: 'error', message: 'Not authenticated' };
   
@@ -417,8 +435,7 @@ export const resolveTickerChoices = async (
   resolvedTransactions: any[] = [],
   allTransactions: any[] = []
 ): Promise<any> => {
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const endpoint = `${cleanApiBaseUrl}/api/transactions/resolve-ticker/${encodeURIComponent(portfolioName)}`;
+  const endpoint = buildApiUrl(`/api/transactions/resolve-ticker/${encodeURIComponent(portfolioName)}`);
   const idToken = getAuthIdToken();
   if (!idToken) return { status: 'error', message: 'Not authenticated' };
   
@@ -470,8 +487,7 @@ export const initialLoad = async (portfolioName: string) => {
 // Fetch ticker name from backend
 export const fetchTickerName = async (ticker: string, idToken: string | null): Promise<string | null> => {
   if (!ticker || !idToken) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/ticker/${encodeURIComponent(ticker)}`;
+  const apiUrl = buildApiUrl(`/api/ticker/${encodeURIComponent(ticker)}`);
   try {
     const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', idToken });
     if (!ok || !data) return null;
@@ -484,26 +500,15 @@ export const fetchTickerName = async (ticker: string, idToken: string | null): P
 // Fetch saved targets for a portfolio. Returns an object like { asset_type: {...}, risk: {...} }
 export const fetchPortfolioTargets = async (portfolioName: string): Promise<Record<string, any> | null> => {
   if (!portfolioName) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${encodeURIComponent(portfolioName)}/targets`;
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  try {
-    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
-    if (!ok || !data) { console.warn('fetchPortfolioTargets: non-ok response'); return null; }
-    return data.targets || null;
-  } catch (e) {
-    console.error('fetchPortfolioTargets error', e);
-    return null;
-  }
+  const data = await commonPortfolioFetch<any>('targets', portfolioName);
+  if (!data) return null;
+  return data.targets || null;
 };
 
 // Save targets for a portfolio. Expects mode and targets object. Returns backend JSON or error object.
 export const savePortfolioTargets = async (portfolioName: string, mode: 'asset_type' | 'risk', targets: Record<string, number>) => {
   if (!portfolioName) return { status: 'error', error: 'No portfolio provided' };
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${encodeURIComponent(portfolioName)}/targets`;
+  const apiUrl = buildPortfolioApiUrl(portfolioName, 'targets');
   const idToken = getAuthIdToken();
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -518,18 +523,33 @@ export const savePortfolioTargets = async (portfolioName: string, mode: 'asset_t
 
 // New function to fetch all portfolio names
 export const fetchAllPortfolioNames = async (): Promise<string[]> => {
-  const apiUrl = `${API_BASE_URL}/api/portfolios`;
+  const apiUrl = buildApiUrl('/api/portfolios');
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
   const cacheKey = 'portfolio_names';
+  const idToken = getAuthIdToken();
+  if (!idToken) {
+    console.debug('fetchAllPortfolioNames: no ID token, returning cached or empty list');
+    try {
+      const cached = await idbGet(cacheKey);
+      return Array.isArray(cached) ? cached : [];
+    } catch {
+      return [];
+    }
+  }
+  headers['Authorization'] = `Bearer ${idToken}`;
   try {
     const cached = await idbGet(cacheKey);
     if (Array.isArray(cached) && cached.length > 0) return cached;
   } catch {}
   try {
-    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
-    if (!ok || !data) throw new Error('Failed to fetch portfolio names');
+    const { ok, status, data, error } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
+    if (!ok || !data) {
+      if (status === 401 || status === 403) {
+        console.warn(`fetchAllPortfolioNames: unauthorized (${status}) - returning empty list`);
+        return [];
+      }
+      throw new Error(error || 'Failed to fetch portfolio names');
+    }
     const toCache = Array.isArray(data.portfolios) ? data.portfolios : [];
     try { await idbSet(cacheKey, toCache, CACHE_TTL_LONG); } catch {}
     return Array.isArray(data.portfolios) ? data.portfolios : [];
@@ -542,62 +562,52 @@ export const fetchAllPortfolioNames = async (): Promise<string[]> => {
 // Fetch portfolio performance (historical value over time)
 export const fetchPortfolioPerformance = async (portfolioName: string): Promise<HistoricalDataPoint[]> => {
   if (!portfolioName) return [];
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/performance`;
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+  const data = await commonPortfolioFetch<any[]>('performance', portfolioName);
+  if (!Array.isArray(data)) return [];
   try {
-    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
-    if (!ok || !data) return [];
-    if (!Array.isArray(data)) return [];
-    try {
-      return data.map((h: any) => ({
-        date: h.date,
-        value: Number(h.net_unrealised_pnl ?? h.net_unrealized_pnl ?? h.value ?? 0) || 0,
-        abs_value: Number(h.total_market_value ?? h.abs_value ?? 0) || 0,
-        pct: Number(h.pct ?? 0) || 0,
-        // New TWR-compatible backend fields (optional)
-        cash: Number(h.cash ?? 0) || 0,
-        equity: Number(h.equity ?? 0) || 0,
-        twr_daily_pct: Number(h.twr_daily_pct ?? 0) || 0,
-        twr_cum_pct: Number(h.twr_cum_pct ?? 0) || 0,
-        twr_index: (() => {
-          const raw = Number(h.twr_index);
-          return Number.isFinite(raw) ? raw : undefined;
-        })(),
-        twr_index_pct: (() => {
-          const indexRaw = Number(h.twr_index);
-          if (Number.isFinite(indexRaw)) {
-            return (indexRaw - 1) * 100;
-          }
-          const pct = Number(h.twr_index_pct ?? h.twr_cum_pct);
-          return Number.isFinite(pct) ? pct : undefined;
-        })(),
-        flow: (() => {
-          const value = Number(h.flow ?? h.net_flow);
-          return Number.isFinite(value) ? value : undefined;
-        })(),
-        cumulative_flow: (() => {
-          const value = Number(h.cumulative_flow ?? h.flow_cumulative);
-          return Number.isFinite(value) ? value : undefined;
-        })(),
-        net_value: (() => {
-          const value = Number(h.net_value);
-          return Number.isFinite(value) ? value : undefined;
-        })(),
-        // pct_from_first removed - calculated client-side when needed
-        // Backend fields for compatibility
-        total_value: Number(h.total_value ?? 0) || 0,
-        total_market_value: Number(h.total_market_value ?? h.abs_value ?? 0) || 0,
-        net_unrealised_pnl: Number(h.net_unrealised_pnl ?? h.net_unrealized_pnl ?? 0) || 0,
-        net_unrealized_pnl: Number(h.net_unrealized_pnl ?? h.net_unrealised_pnl ?? 0) || 0,
-      }));
-    } catch (e) {
-      console.error('Failed to normalize performance payload', e, data);
-      return [];
-    }
+    return data.map((h: any) => ({
+      date: h.date,
+      value: Number(h.net_unrealised_pnl ?? h.net_unrealized_pnl ?? h.value ?? 0) || 0,
+      abs_value: Number(h.total_market_value ?? h.abs_value ?? 0) || 0,
+      pct: Number(h.pct ?? 0) || 0,
+      // New TWR-compatible backend fields (optional)
+      cash: Number(h.cash ?? 0) || 0,
+      equity: Number(h.equity ?? 0) || 0,
+      twr_daily_pct: Number(h.twr_daily_pct ?? 0) || 0,
+      twr_cum_pct: Number(h.twr_cum_pct ?? 0) || 0,
+      twr_index: (() => {
+        const raw = Number(h.twr_index);
+        return Number.isFinite(raw) ? raw : undefined;
+      })(),
+      twr_index_pct: (() => {
+        const indexRaw = Number(h.twr_index);
+        if (Number.isFinite(indexRaw)) {
+          return (indexRaw - 1) * 100;
+        }
+        const pct = Number(h.twr_index_pct ?? h.twr_cum_pct);
+        return Number.isFinite(pct) ? pct : undefined;
+      })(),
+      flow: (() => {
+        const value = Number(h.flow ?? h.net_flow);
+        return Number.isFinite(value) ? value : undefined;
+      })(),
+      cumulative_flow: (() => {
+        const value = Number(h.cumulative_flow ?? h.flow_cumulative);
+        return Number.isFinite(value) ? value : undefined;
+      })(),
+      net_value: (() => {
+        const value = Number(h.net_value);
+        return Number.isFinite(value) ? value : undefined;
+      })(),
+      // pct_from_first removed - calculated client-side when needed
+      // Backend fields for compatibility
+      total_value: Number(h.total_value ?? 0) || 0,
+      total_market_value: Number(h.total_market_value ?? h.abs_value ?? 0) || 0,
+      net_unrealised_pnl: Number(h.net_unrealised_pnl ?? h.net_unrealized_pnl ?? 0) || 0,
+      net_unrealized_pnl: Number(h.net_unrealized_pnl ?? h.net_unrealised_pnl ?? 0) || 0,
+    }));
   } catch (e) {
+    console.error('Failed to normalize performance payload', e, data);
     return [];
   }
 };
@@ -605,54 +615,23 @@ export const fetchPortfolioPerformance = async (portfolioName: string): Promise<
 // Fetch ticker performance (historical value over time for a single ticker in a portfolio)
 export const fetchTickerPerformance = async (portfolioName: string, ticker: string): Promise<HistoricalDataPoint[]> => {
   if (!portfolioName || !ticker) return [];
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  // Ensure both portfolioName and ticker are URL-encoded to avoid path issues
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${encodeURIComponent(portfolioName)}/ticker/${encodeURIComponent(ticker)}/performance`;
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  try {
-    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
-    if (!ok || !data) return [];
-    return Array.isArray(data) ? data : [];
-  } catch (e) {
-    return [];
-  }
+  const data = await commonPortfolioFetch<any[]>(
+    `ticker/${encodeURIComponent(ticker)}/performance`,
+    portfolioName
+  );
+  return Array.isArray(data) ? data : [];
 };
 
 // Fetch KPIs from new backend endpoint
 export const fetchPortfolioKpis = async (portfolioName: string): Promise<any> => {
   if (!portfolioName) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/kpis`;
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  try {
-    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
-    if (!ok) return null;
-    return data;
-  } catch (e) {
-    return null;
-  }
+  return commonPortfolioFetch<any>('kpis', portfolioName);
 };
 
 // Fetch returns KPIs (yesterday, weekly, monthly) for the portfolio dashboard
 export const fetchPortfolioReturnsKpis = async (portfolioName: string): Promise<any> => {
   if (!portfolioName) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/kpis/returns`;
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  else return null;
-  try {
-    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
-    if (!ok) return null;
-    return data;
-  } catch (e) {
-    return null;
-  }
+  return commonPortfolioFetch<any>('kpis/returns', portfolioName);
 };
 
 // Fetch asset allocation from backend API
@@ -661,26 +640,16 @@ export const fetchPortfolioAllocation = async (
   grouping: 'overall' | 'asset_type' | 'assetType' | 'category' | 'risk' | 'category_risk' = 'overall'
 ): Promise<{ grouping: string; allocation: any } | null> => {
   if (!portfolioName) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/allocation?grouping=${grouping}`;
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  const idToken = getAuthIdToken();
-  if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-  else return null;
-  try {
-    const { ok, data } = await apiFetch<any>(apiUrl, { method: 'GET', headers });
-    if (!ok) return null;
-    return data;
-  } catch (e) {
-    return null;
-  }
+  return commonPortfolioFetch<any>(`allocation?grouping=${grouping}`, portfolioName);
 };
 
 // Fetch Gemini report for a single ticker in a portfolio
 export const fetchTickerReport = async (portfolioName: string, ticker: string): Promise<any | null> => {
   if (!portfolioName || !ticker) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${encodeURIComponent(portfolioName)}/ticker/${encodeURIComponent(ticker)}/report`;
+  const apiUrl = buildPortfolioApiUrl(
+    portfolioName,
+    `ticker/${encodeURIComponent(ticker)}/report`
+  );
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -697,8 +666,7 @@ export const fetchTickerReport = async (portfolioName: string, ticker: string): 
 // Fetch Gemini report for multiple tickers in a portfolio (multi-ticker report)
 export const fetchMultiTickerReport = async (portfolioName: string, tickers: string[]): Promise<any | null> => {
   if (!portfolioName || !tickers || tickers.length < 2) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/tickers/report`;
+  const apiUrl = buildPortfolioApiUrl(portfolioName, 'tickers/report');
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -715,8 +683,7 @@ export const fetchMultiTickerReport = async (portfolioName: string, tickers: str
 // Fetch Gemini report for a portfolio (calls /api/portfolio/<portfolio_name>/report)
 export const fetchPortfolioReport = async (portfolioName: string, force: boolean = false): Promise<any | null> => {
   if (!portfolioName) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/report${force ? '?force=true' : ''}`;
+  const apiUrl = buildPortfolioApiUrl(portfolioName, `report${force ? '?force=true' : ''}`);
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -742,14 +709,16 @@ export async function fetchPortfolioVolatility(
   options: { window?: string | number } = {}
 ): Promise<PortfolioVolatilityResponse | null> {
   if (!portfolioName) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
   const windowParam = options.window ?? '30';
   const params = new URLSearchParams();
   if (windowParam !== undefined && windowParam !== null) {
     params.set('window', String(windowParam));
   }
   const queryString = params.toString();
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/volatility${queryString ? `?${queryString}` : ''}`;
+  const apiUrl = buildPortfolioApiUrl(
+    portfolioName,
+    `volatility${queryString ? `?${queryString}` : ''}`
+  );
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -782,7 +751,6 @@ export async function fetchPortfolioVolatilitySeries(
   options: { window?: string | number } = {}
 ): Promise<PortfolioVolatilityPoint[] | null> {
   if (!portfolioName) return null;
-  const cleanApiBaseUrl = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
   const windowParam = options.window ?? '30';
   const params = new URLSearchParams();
   params.set('series', '1');
@@ -790,7 +758,10 @@ export async function fetchPortfolioVolatilitySeries(
     params.set('window', String(windowParam));
   }
   const queryString = params.toString();
-  const apiUrl = `${cleanApiBaseUrl}/api/portfolio/${portfolioName}/volatility${queryString ? `?${queryString}` : ''}`;
+  const apiUrl = buildPortfolioApiUrl(
+    portfolioName,
+    `volatility${queryString ? `?${queryString}` : ''}`
+  );
   const headers: HeadersInit = { 'Content-Type': 'application/json' };
   const idToken = getAuthIdToken();
   if (idToken) headers['Authorization'] = `Bearer ${idToken}`;

@@ -1,5 +1,6 @@
 import React from 'react';
-import GenericPerformanceSection, { ValueType } from '../../../components/PerformanceSection';
+import GenericPerformanceSection from '../../../components/PerformanceSection';
+import type { ValueType } from '../../../features/performance/valueTypes';
 import TimeSeriesChart from '../../../components/charts/TimeSeriesChart';
 
 interface PerformanceChartSectionProps {

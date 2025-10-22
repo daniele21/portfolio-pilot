@@ -2,7 +2,8 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../../AuthContext';
 import { fetchTickerPerformance, fetchPortfolioVolatilitySeries } from '../../../services/portfolioService';
-import GenericPerformanceSection, { ValueType } from '../../../components/PerformanceSection';
+import GenericPerformanceSection from '../../../components/PerformanceSection';
+import type { ValueType } from '../../../features/performance/valueTypes';
 // Listbox removed: selection is done from the Returns table on the Assets page
 
 interface TickerOption {

@@ -7,13 +7,11 @@ This file now only:
   - Exposes app = create_app() for flask run
 """
 
-import sys
 import os
-from datetime import timedelta, datetime, timezone
-from flask import Flask, jsonify, request
+from datetime import timedelta
+from flask import Flask, jsonify
 
 from api.utils import register_request_logging
-from api.auth import require_google_token
 
 
 def create_app():

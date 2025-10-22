@@ -20,7 +20,7 @@ import AssetAllocationSummary from './modules/AssetAllocationSummary';
 import MiniSummary from './modules/MiniSummary';
 import PerformanceChartSection from './modules/PerformanceChartSection';
 import { ChartBarIcon } from '@heroicons/react/24/outline';
-import { ValueType } from '../../components/PerformanceSection';
+import type { ValueType } from '../../features/performance/valueTypes';
 import { fetchBenchmarkPerformance } from '../../services/marketDataService';
 import { idbGet } from '../../utils/idbCache';
 

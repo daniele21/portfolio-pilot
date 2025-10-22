@@ -1,8 +1,13 @@
 import React from 'react';
-import { Card, Group, Text, SegmentedControl, Button, Select } from '@mantine/core';
+import { Card, Group, Text, SegmentedControl, Button } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import TimeSeriesChart from './charts/TimeSeriesChart';
-import type { ValueType } from './PerformanceSection';
+import {
+  selectValueFormatter,
+  transformSeriesForValueType
+} from '../features/performance/chartBuilders';
+import type { ValueType } from '../features/performance/valueTypes';
+import { VALUE_TYPE_LABELS } from '../features/performance/valueTypes';
 
 export interface FinancePerformanceChartProps {
   title: string;
@@ -34,32 +39,20 @@ const FinancePerformanceChart: React.FC<FinancePerformanceChartProps> = ({
   selector
 }) => {
   // Transform series data for TimeSeriesChart
-  const chartSeries = React.useMemo(() => {
-    return series.map(s => ({
-      ...s,
-      data: s.data.map(point => {
-        if (valueType === 'performance') {
-          const realized = Number(point.realized ?? point.realised ?? 0) || 0;
-          const unreal = Number(point.net_unrealised_pnl ?? point.net_unrealized_pnl ?? point.value ?? 0) || 0;
-          const spent = Number(point.total_cost_spent ?? 0) || 0;
-          const pct = spent > 1e-9 ? ((realized + unreal) / spent * 100.0) : 0.0;
-          return { time: point.date, value: pct };
-        } else if (valueType === 'pct') {
-          // For 'pct' valueType, compute net unrealized percentage: net_unrealized / total_cost_spent
-          const netUnrealized = Number(point.net_unrealised_pnl ?? point.net_unrealized_pnl ?? point.value ?? 0) || 0;
-          const spent = Number(point.total_cost_spent ?? 0) || 0;
-          const pct = spent > 1e-9 ? (netUnrealized / spent * 100.0) : 0.0;
-          return { time: point.date, value: pct };
-        }
-        return { time: point.date, value: point[valueType] ?? point.value ?? 0 };
-      })
-    }));
-  }, [series, valueType]);
+  const chartSeries = React.useMemo(
+    () => transformSeriesForValueType(valueType, series),
+    [series, valueType]
+  );
+
+  const valueFormatter = React.useMemo(
+    () => selectValueFormatter(valueType),
+    [valueType]
+  );
 
   const valueTypeOptions = [
-    { label: 'Absolute', value: 'abs_value' },
-    { label: 'Net Value', value: 'value' },
-    { label: 'Percentage', value: 'pct' },
+    { label: VALUE_TYPE_LABELS.abs_value, value: 'abs_value' },
+    { label: VALUE_TYPE_LABELS.value, value: 'value' },
+    { label: VALUE_TYPE_LABELS.pct, value: 'pct' },
     { label: '% from Start', value: 'performance' }
   ];
 
@@ -134,15 +127,7 @@ const FinancePerformanceChart: React.FC<FinancePerformanceChartProps> = ({
             series={chartSeries}
             height={300}
             // Values are already percent when valueType === 'performance'
-            valueFormatter={(value) => {
-              if (valueType === 'pct' || valueType === 'performance') {
-                return `${value.toFixed(2)}%`;
-              }
-              return value.toLocaleString(undefined, { 
-                minimumFractionDigits: 2, 
-                maximumFractionDigits: 2 
-              });
-            }}
+            valueFormatter={valueFormatter}
             normalizeToZero={false}
             normalizeToPercent={false}
           />

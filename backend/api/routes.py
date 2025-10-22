@@ -51,6 +51,14 @@ def require_auth_for_all_api():
     uid, err = get_request_user_id_or_error()
     if err:
         return err
+    # Enforce presence of a valid token (uid must be present). Previously the
+    # code allowed unauthenticated requests to proceed; change here makes all
+    # API endpoints require authentication by default. Individual routes that
+    # should be public (e.g. a public ticker search) must explicitly handle
+    # OPTIONS or implement their own @allow_public decorator.
+    if not uid:
+        # No token provided or could not derive a uid from it
+        return (jsonify({'error': 'missing_or_invalid_token'}), 401)
     # Otherwise allow the request to proceed; handlers can call get_request_user_id()
     return None
 

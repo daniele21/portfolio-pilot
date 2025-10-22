@@ -1,141 +1,60 @@
-from collections import defaultdict
+from __future__ import annotations
+
 from datetime import datetime
+from threading import Lock
 import pandas as pd
-from db.database import (
-    aggregate_positions,
-    get_ticker_history,
-    save_ticker_data,
-    get_ticker_data,
+
+from db.database import aggregate_positions, save_ticker_data
+from services import data_fetcher
+
+from core.portfolio_cache import DailyExpiryCache
+from core.portfolio_data_access import (
+    get_all_transactions,
+    get_saved_portfolio_status,
+    get_ticker_data_for_symbol,
+    get_ticker_history_for_symbol,
+    get_transactions_for_portfolio,
 )
-# Local helper: attempt to call user-scoped db functions when uid provided.
+from core.portfolio_transactions import (
+    calculate_average_cost,
+    normalize_transaction_signs,
+)
+
+
 def _get_transactions_for(portfolio_name, uid=None):
-    # defer import to avoid circulars
-    try:
-        if uid:
-            from db.portfolios import get_transactions_user
-            return get_transactions_user(uid, portfolio_name)
-    except Exception:
-        pass
-    try:
-        from db.database import get_transactions
-        return get_transactions(portfolio_name)
-    except Exception:
-        return []
+    return get_transactions_for_portfolio(portfolio_name, uid)
+
 
 def _get_all_transactions(uid=None):
-    try:
-        if uid:
-            from db.portfolios import get_transactions_user
-            return get_transactions_user(uid, None)
-    except Exception:
-        pass
-    try:
-        from db.database import get_transactions
-        return get_transactions(None)
-    except Exception:
-        return []
+    return get_all_transactions(uid)
+
 
 def _get_portfolio_status_saved_for(portfolio_name, uid=None):
-    try:
-        if uid:
-            from db.portfolios import get_portfolio_status_saved_user
-            return get_portfolio_status_saved_user(uid, portfolio_name)
-    except Exception:
-        pass
-    try:
-        from db.database import get_portfolio_status_saved
-        return get_portfolio_status_saved(portfolio_name)
-    except Exception:
-        return ({'total_value': 0.0, 'holdings': []}, None, None)
+    return get_saved_portfolio_status(portfolio_name, uid)
+
 
 def _get_ticker_history_for(ticker, uid=None):
-    # ticker history and ticker data remain global; still call get_ticker_history
-    try:
-        from db.database import get_ticker_history
-        return get_ticker_history(ticker)
-    except Exception:
-        return []
+    # History is not user-scoped today; keep signature for compatibility.
+    return get_ticker_history_for_symbol(ticker)
+
 
 def _get_ticker_data_for(ticker, uid=None):
-    try:
-        from db.database import get_ticker_data
-        return get_ticker_data(ticker)
-    except Exception:
-        return (None, None)
+    return get_ticker_data_for_symbol(ticker)
 
 
 def _normalize_transactions_signs(txs):
-    """Return a copy of txs where quantities are normalized so buys are positive and sells negative.
+    return normalize_transaction_signs(txs)
 
-    Uses the 'operation' field when present. If operation is missing, preserves existing sign.
-    """
-    if not txs:
-        return txs
-    sell_ops = {'sell', 's', 'withdraw', 'withdrawal', 'out'}
-    buy_ops = {'buy', 'b', 'deposit', 'in'}
-    normalized = []
-    for t in txs:
-        try:
-            tt = dict(t)
-        except Exception:
-            tt = t
-        try:
-            qty = float(tt.get('quantity', 0) or 0)
-        except Exception:
-            qty = 0.0
-        try:
-            op = (tt.get('operation') or '').strip().lower()
-        except Exception:
-            op = ''
-        if op in sell_ops and qty > 0:
-            qty = -abs(qty)
-        elif op in buy_ops and qty < 0:
-            qty = abs(qty)
-        # preserve other cases
-        tt['quantity'] = qty
-        normalized.append(tt)
-    return normalized
-from services import data_fetcher
-import time
-from threading import Lock
-from datetime import timezone, timedelta
-import os
 
 # --- In-memory day-reset caches (expire at next UTC midnight) ---
-# Caches store entries as: key -> (expiry_ts_utc, data)
 _CACHE_LOCK = Lock()
-# per-portfolio performance cache: key=portfolio_name
-_PERFORMANCE_CACHE: dict = {}
-# per-portfolio+ticker performance cache: key=(portfolio_name, ticker, start_date_str)
-_TICKER_PERFORMANCE_CACHE: dict = {}
-# multi-ticker per-portfolio cache: key=(portfolio_name, tuple(sorted(tickers)), start_date_str)
-_MULTI_TICKER_PERFORMANCE_CACHE: dict = {}
-
-
-def _next_utc_midnight_ts() -> float:
-    now = datetime.now(timezone.utc)
-    next_midnight = datetime(year=now.year, month=now.month, day=now.day, tzinfo=timezone.utc) + timedelta(days=1)
-    return next_midnight.timestamp()
-
-
-def _get_cache_entry(cache: dict, key):
-    entry = cache.get(key)
-    if not entry:
-        return None
-    expiry_ts, data = entry
-    if datetime.now(timezone.utc).timestamp() < expiry_ts:
-        return data
-    # expired
-    try:
-        cache.pop(key, None)
-    except Exception:
-        pass
-    return None
-
-
-def _set_cache_entry(cache: dict, key, data):
-    expiry_ts = _next_utc_midnight_ts()
-    cache[key] = (expiry_ts, data)
+_PERFORMANCE_CACHE = DailyExpiryCache("portfolio.performance", lock=_CACHE_LOCK)
+_TICKER_PERFORMANCE_CACHE = DailyExpiryCache(
+    "portfolio.ticker", lock=_CACHE_LOCK
+)
+_MULTI_TICKER_PERFORMANCE_CACHE = DailyExpiryCache(
+    "portfolio.multi", lock=_CACHE_LOCK
+)
 
 
 # Helper to clear caches (call after transaction changes)
@@ -145,64 +64,82 @@ def clear_performance_caches(portfolio_name=None, tickers=None, uid=None):
     When uid is provided, clears namespaced keys (f"{uid}:{portfolio}") to ensure
     user-scoped data is recomputed. If portfolio_name is None, clears all caches.
     """
-    with _CACHE_LOCK:
-        if portfolio_name is None:
-            # Global clear
-            _PERFORMANCE_CACHE.clear()
-            _TICKER_PERFORMANCE_CACHE.clear()
-            _MULTI_TICKER_PERFORMANCE_CACHE.clear()
-            return
-        namespaced = f"{uid}:{portfolio_name}" if uid else portfolio_name
-        # Portfolio-level cache
-        _PERFORMANCE_CACHE.pop(namespaced, None)
-        # Ticker-level cache entries
-        if tickers:
-            tickers_set = set(tickers)
-            to_remove = [k for k in list(_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == namespaced and k[1] in tickers_set]
-        else:
-            to_remove = [k for k in list(_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == namespaced]
-        for k in to_remove:
-            _TICKER_PERFORMANCE_CACHE.pop(k, None)
-        # Multi-ticker cache entries
-        if tickers:
-            tickers_set = set(tickers)
-            multi_remove = [k for k in list(_MULTI_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == namespaced and (set(k[1]) & tickers_set)]
-        else:
-            multi_remove = [k for k in list(_MULTI_TICKER_PERFORMANCE_CACHE.keys()) if k[0] == namespaced]
-        for k in multi_remove:
-            _MULTI_TICKER_PERFORMANCE_CACHE.pop(k, None)
+    if portfolio_name is None:
+        _PERFORMANCE_CACHE.clear()
+        _TICKER_PERFORMANCE_CACHE.clear()
+        _MULTI_TICKER_PERFORMANCE_CACHE.clear()
+        return
+
+    namespaced = f"{uid}:{portfolio_name}" if uid else portfolio_name
+    tickers_set = {
+        t.strip().upper()
+        for t in (tickers or [])
+        if isinstance(t, str) and t.strip()
+    }
+
+    _PERFORMANCE_CACHE.invalidate(namespaced)
+
+    def _ticker_matches(key):
+        if not isinstance(key, (list, tuple)) or not key:
+            return False
+        cache_portfolio = key[0]
+        if cache_portfolio != namespaced:
+            return False
+        if not tickers_set:
+            return True
+        ticker = key[1] if len(key) > 1 else None
+        if isinstance(ticker, str):
+            return ticker.strip().upper() in tickers_set
+        return ticker in tickers_set
+
+    _TICKER_PERFORMANCE_CACHE.invalidate_matching(_ticker_matches)
+
+    def _multi_matches(key):
+        if not isinstance(key, (list, tuple)) or not key:
+            return False
+        cache_portfolio = key[0]
+        if cache_portfolio != namespaced:
+            return False
+        if not tickers_set:
+            return True
+        tickers_tuple = key[1] if len(key) > 1 else ()
+        try:
+            tickers_in_key = {
+                t.strip().upper() if isinstance(t, str) else t for t in tickers_tuple
+            }
+        except Exception:
+            return False
+        return bool(tickers_in_key & tickers_set)
+
+    _MULTI_TICKER_PERFORMANCE_CACHE.invalidate_matching(_multi_matches)
 
 
 # --- Caching wrappers ---
 def get_cached_portfolio_performance(portfolio_name, uid=None, debug: bool = False):
     # Namespace the cache key by uid when provided to avoid collisions
     key = f"{uid}:{portfolio_name}" if uid else portfolio_name
-    with _CACHE_LOCK:
-        cached = _get_cache_entry(_PERFORMANCE_CACHE, key)
-        if cached is not None:
-            return cached
+    cached = _PERFORMANCE_CACHE.get(key)
+    if cached is not None:
+        return cached
     data = compute_portfolio_performance(portfolio_name, _skip_cache=True, uid=uid, debug=debug)
-    with _CACHE_LOCK:
-        try:
-            _set_cache_entry(_PERFORMANCE_CACHE, key, data)
-        except Exception:
-            pass
+    try:
+        _PERFORMANCE_CACHE.set(key, data)
+    except Exception:
+        pass
     return data
 
 
 def get_cached_ticker_performance(portfolio_name, ticker, start_date=None, uid=None):
     namespaced = f"{uid}:{portfolio_name}" if uid else portfolio_name
     key = (namespaced, ticker, str(start_date) if start_date else '')
-    with _CACHE_LOCK:
-        cached = _get_cache_entry(_TICKER_PERFORMANCE_CACHE, key)
-        if cached is not None:
-            return cached
+    cached = _TICKER_PERFORMANCE_CACHE.get(key)
+    if cached is not None:
+        return cached
     data = compute_ticker_performance(portfolio_name, ticker, start_date, _skip_cache=True, uid=uid)
-    with _CACHE_LOCK:
-        try:
-            _set_cache_entry(_TICKER_PERFORMANCE_CACHE, key, data)
-        except Exception:
-            pass
+    try:
+        _TICKER_PERFORMANCE_CACHE.set(key, data)
+    except Exception:
+        pass
     return data
 
 
@@ -226,47 +163,13 @@ def get_portfolio_status(portfolio_name, uid=None):
         # into total_cost/total_qty, and on sells reduce total_qty and total_cost
         # proportionally. This produces the average cost per remaining share.
         try:
-            # Filter ticker transactions and sort by date
-            txs_for_tk = [t for t in (txs or []) if (t.get('ticker') or '').strip().upper() == (ticker or '').strip().upper()]
-            def _parse_date(d):
-                try:
-                    return pd.to_datetime(d)
-                except Exception:
-                    return None
-            txs_for_tk.sort(key=lambda x: (_parse_date(x.get('date')) or datetime.min))
-            total_qty = 0.0
-            total_cost = 0.0
-            for t in txs_for_tk:
-                try:
-                    t_qty = float(t.get('quantity', 0) or 0)
-                except Exception:
-                    t_qty = 0.0
-                # Interpret explicit operation flags (sell) similarly to db.aggregate_positions
-                try:
-                    op = (t.get('operation') or '').strip().lower()
-                except Exception:
-                    op = ''
-                if t_qty >= 0 and op in ('sell', 's', 'withdraw', 'withdrawal', 'out'):
-                    t_qty = -abs(t_qty)
-                try:
-                    t_price = float(t.get('price', 0) or 0)
-                except Exception:
-                    t_price = 0.0
-                if t_qty > 0:
-                    total_cost += t_qty * t_price
-                    total_qty += t_qty
-                elif t_qty < 0:
-                    sell_qty = -t_qty
-                    if total_qty > 0:
-                        cost_per_unit = (total_cost / total_qty) if total_qty else 0.0
-                        reduction_qty = min(sell_qty, total_qty)
-                        total_cost -= reduction_qty * cost_per_unit
-                        total_qty -= reduction_qty
-                    else:
-                        # selling without prior buys — set totals to zero (no cost basis)
-                        total_qty = max(total_qty - sell_qty, 0.0)
-                        total_cost = 0.0
-            avg_cost = (total_cost / total_qty) if total_qty else 0.0
+            txs_for_tk = [
+                t
+                for t in (txs or [])
+                if (t.get('ticker') or '').strip().upper()
+                == (ticker or '').strip().upper()
+            ]
+            avg_cost = calculate_average_cost(txs_for_tk)
         except Exception:
             avg_cost = 0.0
         # Get latest price from ticker_info (Firestore)
@@ -1322,13 +1225,13 @@ def get_last_day_possible_returns(portfolio_name, uid=None):
     tickers = df_txs['ticker'].unique()
     all_dates = set()
     for ticker in tickers:
-        hist = get_ticker_history(ticker)
+        hist = _get_ticker_history_for(ticker, uid=uid)
         if not hist:
             data, _ = data_fetcher.fetch_with_cache(ticker)
             history = (data or {}).get('history', [])
             if history:
                 save_ticker_data(ticker, data)
-                hist = get_ticker_history(ticker)
+                hist = _get_ticker_history_for(ticker, uid=uid)
         if not hist:
             continue
         df_hist = pd.DataFrame(hist)
@@ -1437,15 +1340,15 @@ def get_ticker_returns_since(portfolio_name, ticker, start_date, uid=None):
         'return_pct': ticker_return
     }
 
-def get_ticker_last_day_possible_returns(portfolio_name, ticker):
+def get_ticker_last_day_possible_returns(portfolio_name, ticker, uid=None):
     import pandas as pd
-    hist = get_ticker_history(ticker)
+    hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
         data, _ = data_fetcher.fetch_with_cache(ticker)
         history = (data or {}).get('history', [])
         if history:
             save_ticker_data(ticker, data)
-            hist = get_ticker_history(ticker)
+            hist = _get_ticker_history_for(ticker, uid=uid)
     if not hist:
         return None
     df_hist = pd.DataFrame(hist)
@@ -1453,7 +1356,7 @@ def get_ticker_last_day_possible_returns(portfolio_name, ticker):
         return None
     df_hist['date'] = pd.to_datetime(df_hist['date'])
     last_day = df_hist['date'].max()
-    return get_ticker_returns_since(portfolio_name, ticker, last_day.strftime('%Y-%m-%d'))
+    return get_ticker_returns_since(portfolio_name, ticker, last_day.strftime('%Y-%m-%d'), uid=uid)
 
 def get_ticker_weekly_returns(portfolio_name, ticker):
     import pandas as pd
